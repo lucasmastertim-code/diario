@@ -25,12 +25,17 @@ let recognition = null;
 let isRecording = false;
 let baseText = "";
 let ultimoErroDitado = null;
+let ultimoTrechoAndroid = "";
+
+const APP_VERSION = "v4-android-so-final";
+console.log("app.js", APP_VERSION);
 
 const btnRecord = document.getElementById('btnRecord');
 const statusMsg = document.getElementById('statusMsg');
 const btnSave = document.getElementById('btnSave');
 const btnLocation = document.getElementById('btnLocation');
 const entryText = document.getElementById('entryText');
+if (statusMsg) statusMsg.innerText = `app.js ${APP_VERSION}`;
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -132,7 +137,7 @@ function finalizarUI() {
 function criarReconhecimento() {
   const rec = new SpeechRecognition();
   rec.continuous = !EH_ANDROID; // no Android, o modo contínuo repete o texto
-  rec.interimResults = true;
+  rec.interimResults = !EH_ANDROID; // no Android, só resultados finais (evita repetição)
   rec.lang = 'pt-BR';
 
   rec.onresult = (event) => {
@@ -144,9 +149,11 @@ function criarReconhecimento() {
       // e, quando ele fica final, "travamos" o texto em baseText.
       const ultimo = event.results[event.results.length - 1];
       const t = ultimo[0].transcript.trim();
-      const novo = baseText + (baseText && t ? ' ' : '') + t;
-      entryText.value = novo;
-      if (ultimo.isFinal) baseText = novo;
+      if (!t || !ultimo.isFinal) return;
+      if (t === ultimoTrechoAndroid) return; // ignora evento repetido idêntico
+      ultimoTrechoAndroid = t;
+      baseText = baseText + (baseText ? ' ' : '') + t;
+      entryText.value = baseText;
       entryText.scrollTop = entryText.scrollHeight;
       return;
     } else {
@@ -188,6 +195,7 @@ function criarReconhecimento() {
     // O Chrome encerra sozinho após silêncio: reinicia se o usuário ainda quer gravar.
     if (isRecording) {
       baseText = entryText.value;
+      ultimoTrechoAndroid = "";
       try {
         recognition = criarReconhecimento();
         recognition.start();
