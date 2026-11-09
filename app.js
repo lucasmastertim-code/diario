@@ -29,7 +29,16 @@ let baseText = "";
 let ultimoErroDitado = null;
 let ultimoTrechoAndroid = "";
 
-const APP_VERSION = "v5-login-google";
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const providerGoogle = new GoogleAuthProvider();
+providerGoogle.addScope(DRIVE_SCOPE);
+let driveToken = null;
+let driveTokenHora = 0;
+let pastaDriveId = null;
+let fotosPendentes = [];
+let arquivosPendentes = [];
+
+const APP_VERSION = "v6-journey-drive";
 console.log("app.js", APP_VERSION);
 
 const btnRecord = document.getElementById('btnRecord');
@@ -291,21 +300,141 @@ window.addEventListener('pagehide', () => {
   desligarMicrofoneHardware();
 });
 
-// 3. CAPTURA DE LOCALIZAÇÃO GPS
+// 3. CAPTURA DE LOCALIZAÇÃO GPS (com o nome do lugar)
+async function nomeDoLugar(lat, lng) {
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&accept-language=pt-BR&lat=${lat}&lon=${lng}`);
+    if (!r.ok) return null;
+    const d = await r.json();
+    const a = d.address || {};
+    const rua = a.road || a.pedestrian || a.footway || '';
+    const bairro = a.suburb || a.neighbourhood || a.quarter || '';
+    const cidade = a.city || a.town || a.village || a.municipality || '';
+    const partes = [rua, bairro, cidade, a.state].filter(Boolean);
+    return partes.length ? partes.join(', ') : (d.display_name || null);
+  } catch (err) {
+    console.error(err);
+    return null;
+  }
+}
+
 if (btnLocation) {
   btnLocation.addEventListener('click', () => {
-    if (navigator.geolocation) {
-      statusMsg.innerText = "Obtendo localização...";
-      navigator.geolocation.getCurrentPosition(pos => {
-        currentLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        statusMsg.innerText = `Local salvo: ${pos.coords.latitude.toFixed(2)}, ${pos.coords.longitude.toFixed(2)}`;
-      }, () => statusMsg.innerText = "Erro ao obter GPS.");
+    if (!navigator.geolocation) {
+      statusMsg.innerText = "Este navegador não tem GPS.";
+      return;
     }
+    statusMsg.innerText = "Obtendo localização...";
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      currentLocation = { lat, lng, nome: null };
+      statusMsg.innerText = "Buscando o nome do lugar...";
+      currentLocation.nome = await nomeDoLugar(lat, lng);
+      const rotulo = currentLocation.nome || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+      statusMsg.innerText = `📍 ${rotulo}`;
+    }, () => {
+      statusMsg.innerText = "Erro ao obter GPS. Permita o acesso à localização.";
+    }, { enableHighAccuracy: true, timeout: 15000 });
   });
 }
 
-// Reduz a foto para caber no limite de ~1 MB por documento do Firestore
-function comprimirImagem(file, maxLado = 1024, qualidade = 0.7) {
+// 4. FOTOS E ARQUIVOS (a interface extra é criada por aqui mesmo)
+const MAX_FOTOS = 4;
+const MAX_ARQUIVO_MB = 10;
+const photoInput = document.getElementById('photoInput');
+
+const previewBox = document.createElement('div');
+previewBox.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;margin:8px 0;';
+if (btnSave) btnSave.insertAdjacentElement('beforebegin', previewBox);
+
+const fileInput = document.createElement('input');
+fileInput.type = 'file';
+fileInput.multiple = true;
+fileInput.style.display = 'none';
+document.body.appendChild(fileInput);
+
+if (btnLocation) {
+  const btnArquivo = document.createElement('button');
+  btnArquivo.type = 'button';
+  btnArquivo.className = btnLocation.className;
+  btnArquivo.innerText = '📎 Arquivo';
+  btnArquivo.addEventListener('click', () => fileInput.click());
+  btnLocation.insertAdjacentElement('afterend', btnArquivo);
+}
+
+if (photoInput) {
+  photoInput.multiple = true;
+  photoInput.accept = 'image/*';
+}
+
+function formatarTamanho(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+function botaoRemover(acao) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = '✕';
+  b.style.cssText = 'position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:none;background:#ef4444;color:#fff;font-size:12px;cursor:pointer;padding:0;';
+  b.addEventListener('click', acao);
+  return b;
+}
+
+function renderPreview() {
+  previewBox.innerHTML = '';
+  fotosPendentes.forEach((f, i) => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:relative;';
+    const img = document.createElement('img');
+    const url = URL.createObjectURL(f);
+    img.src = url;
+    img.onload = () => URL.revokeObjectURL(url);
+    img.style.cssText = 'width:72px;height:72px;object-fit:cover;border-radius:8px;display:block;';
+    wrap.appendChild(img);
+    wrap.appendChild(botaoRemover(() => { fotosPendentes.splice(i, 1); renderPreview(); }));
+    previewBox.appendChild(wrap);
+  });
+  arquivosPendentes.forEach((f, i) => {
+    const chip = document.createElement('div');
+    chip.style.cssText = 'position:relative;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;max-width:100%;word-break:break-all;';
+    chip.textContent = `📎 ${f.name} (${formatarTamanho(f.size)})`;
+    chip.appendChild(botaoRemover(() => { arquivosPendentes.splice(i, 1); renderPreview(); }));
+    previewBox.appendChild(chip);
+  });
+}
+
+if (photoInput) {
+  photoInput.addEventListener('change', () => {
+    for (const f of Array.from(photoInput.files)) {
+      if (!f.type.startsWith('image/')) continue;
+      if (fotosPendentes.length >= MAX_FOTOS) {
+        statusMsg.innerText = `Máximo de ${MAX_FOTOS} fotos por entrada.`;
+        break;
+      }
+      fotosPendentes.push(f);
+    }
+    photoInput.value = '';
+    renderPreview();
+  });
+}
+
+fileInput.addEventListener('change', () => {
+  for (const f of Array.from(fileInput.files)) {
+    if (f.size > MAX_ARQUIVO_MB * 1048576) {
+      statusMsg.innerText = `"${f.name}" passa de ${MAX_ARQUIVO_MB} MB e foi ignorado.`;
+      continue;
+    }
+    arquivosPendentes.push(f);
+  }
+  fileInput.value = '';
+  renderPreview();
+});
+
+// Fotos ficam no próprio banco (reduzidas para caber no limite de ~1 MB)
+function comprimirImagem(file, maxLado, qualidade) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = reject;
@@ -326,47 +455,145 @@ function comprimirImagem(file, maxLado = 1024, qualidade = 0.7) {
   });
 }
 
-// 4. SALVAR REGISTRO NO FIREBASE
+async function prepararFotos() {
+  const tentativas = [[1024, 0.7], [800, 0.55], [600, 0.45]];
+  for (const [lado, qualidade] of tentativas) {
+    const lista = [];
+    for (const f of fotosPendentes) lista.push(await comprimirImagem(f, lado, qualidade));
+    const total = lista.reduce((soma, x) => soma + x.length, 0);
+    if (total < 800000) return lista;
+  }
+  throw new Error('As fotos ficaram pesadas demais. Remova algumas.');
+}
+
+// Arquivos vão para a pasta "Meu Diário" no Google Drive da própria conta
+function tokenDriveValido() {
+  return driveToken && (Date.now() - driveTokenHora) < 50 * 60 * 1000;
+}
+
+async function entrarComGoogle() {
+  const result = await signInWithPopup(auth, providerGoogle);
+  const cred = GoogleAuthProvider.credentialFromResult(result);
+  driveToken = cred && cred.accessToken ? cred.accessToken : null;
+  driveTokenHora = Date.now();
+  pastaDriveId = null;
+}
+
+async function driveFetch(url, opcoes = {}) {
+  const r = await fetch(url, {
+    ...opcoes,
+    headers: { ...(opcoes.headers || {}), Authorization: `Bearer ${driveToken}` }
+  });
+  if (!r.ok) {
+    let msg = String(r.status);
+    try {
+      const e = await r.json();
+      msg = (e.error && e.error.message) || msg;
+    } catch (x) {}
+    const err = new Error(msg);
+    err.status = r.status;
+    throw err;
+  }
+  return r.json();
+}
+
+async function garantirPastaDrive() {
+  if (pastaDriveId) return pastaDriveId;
+  const q = encodeURIComponent("name='Meu Diário' and mimeType='application/vnd.google-apps.folder' and trashed=false");
+  const lista = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&spaces=drive`);
+  if (lista.files && lista.files.length) {
+    pastaDriveId = lista.files[0].id;
+    return pastaDriveId;
+  }
+  const nova = await driveFetch('https://www.googleapis.com/drive/v3/files?fields=id', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Meu Diário', mimeType: 'application/vnd.google-apps.folder' })
+  });
+  pastaDriveId = nova.id;
+  return pastaDriveId;
+}
+
+async function enviarArquivoDrive(file, pastaId) {
+  const limite = 'diario' + Date.now() + Math.random().toString(16).slice(2);
+  const metadados = { name: file.name, parents: [pastaId] };
+  const corpo = new Blob([
+    `--${limite}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadados)}\r\n`,
+    `--${limite}\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`,
+    file,
+    `\r\n--${limite}--`
+  ]);
+  const r = await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,size,webViewLink', {
+    method: 'POST',
+    headers: { 'Content-Type': `multipart/related; boundary=${limite}` },
+    body: corpo
+  });
+  return { id: r.id, nome: r.name, tipo: r.mimeType, tamanho: Number(r.size) || file.size, link: r.webViewLink };
+}
+
+// SALVAR REGISTRO NO FIREBASE
 if (btnSave) {
   btnSave.addEventListener('click', async () => {
-    const photo = document.getElementById('photoInput').files[0];
-    let photoBase64 = null;
-
-    if (isRecording) {
-      await pararGravacao(); // espera o último trecho ditado chegar
+    // O pop-up do Google precisa abrir logo no clique, antes de qualquer outra espera
+    if (arquivosPendentes.length && !tokenDriveValido()) {
+      try {
+        statusMsg.innerText = "Conectando ao Google Drive...";
+        await entrarComGoogle();
+      } catch (err) {
+        console.error(err);
+        statusMsg.innerText = "Não foi possível conectar ao Google Drive. Permita pop-ups e o acesso ao Drive.";
+        return;
+      }
     }
 
-    const textoFinal = entryText.value.trim();
+    if (isRecording) await pararGravacao();
 
-    if (!textoFinal && !photo) {
-      alert("Escreva algo ou grave um áudio antes de salvar.");
+    const textoFinal = entryText.value.trim();
+    if (!textoFinal && !fotosPendentes.length && !arquivosPendentes.length) {
+      alert("Escreva algo, grave um áudio ou anexe algo antes de salvar.");
       return;
     }
 
     btnSave.disabled = true;
-    statusMsg.innerText = "Salvando registro no banco de dados...";
-
     try {
-      if (photo) {
-        photoBase64 = await comprimirImagem(photo);
+      statusMsg.innerText = "Preparando a entrada...";
+      const fotos = await prepararFotos();
+
+      const arquivos = [];
+      if (arquivosPendentes.length) {
+        const pastaId = await garantirPastaDrive();
+        for (let i = 0; i < arquivosPendentes.length; i++) {
+          statusMsg.innerText = `Enviando arquivo ${i + 1} de ${arquivosPendentes.length} para o Google Drive...`;
+          arquivos.push(await enviarArquivoDrive(arquivosPendentes[i], pastaId));
+        }
       }
 
+      statusMsg.innerText = "Salvando registro no banco de dados...";
       await addDoc(collection(db, "diario_entradas"), {
         texto: textoFinal,
         uid: auth.currentUser ? auth.currentUser.uid : null,
         data: new Date().toISOString(),
         localizacao: currentLocation,
-        fotoBase64: photoBase64
+        fotos,
+        arquivos
       });
 
       statusMsg.innerText = "Entrada salva com sucesso!";
       entryText.value = "";
       baseText = "";
       currentLocation = null;
-      document.getElementById('photoInput').value = "";
+      fotosPendentes = [];
+      arquivosPendentes = [];
+      renderPreview();
     } catch (err) {
       console.error(err);
-      statusMsg.innerText = "Erro ao salvar no banco de dados.";
+      if (err.status === 401) driveToken = null;
+      if (err.status === 404) pastaDriveId = null;
+      let msg = err.message || 'tente de novo';
+      if (err.status === 403 && /not been used|disabled|accessNotConfigured/i.test(msg)) {
+        msg = 'a API do Google Drive não está ativada no projeto.';
+      }
+      statusMsg.innerText = `Erro ao salvar: ${msg}`;
     } finally {
       btnSave.disabled = false;
     }
@@ -389,16 +616,36 @@ function escutarEntradasEmTempoReal() {
     let html = "";
     querySnapshot.forEach((docSnap) => {
       const data = docSnap.data();
-      const dateFormatted = new Date(data.data).toLocaleString('pt-BR');
-      const foto = typeof data.fotoBase64 === 'string' && data.fotoBase64.startsWith('data:image/')
-        ? `<img src="${data.fotoBase64}" style="max-width:100%; border-radius:8px; margin-top:6px;">`
+      const quando = new Date(data.data);
+      const dataTxt = quando.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+      const horaTxt = quando.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+      let local = '';
+      if (data.localizacao && typeof data.localizacao.lat === 'number') {
+        const l = data.localizacao;
+        const rotulo = l.nome || `${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}`;
+        local = `<div style="font-size:13px;color:#475569;margin-top:2px;">📍 <a href="https://www.google.com/maps?q=${l.lat},${l.lng}" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;">${escapeHtml(rotulo)}</a></div>`;
+      }
+
+      const listaFotos = [].concat(Array.isArray(data.fotos) ? data.fotos : [], data.fotoBase64 ? [data.fotoBase64] : [])
+        .filter(f => typeof f === 'string' && f.startsWith('data:image/'));
+      const larguraFoto = listaFotos.length > 1 ? '48%' : '100%';
+      const fotosHtml = listaFotos.length
+        ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">${listaFotos.map(f => `<img src="${f}" style="max-width:${larguraFoto};border-radius:8px;">`).join('')}</div>`
         : '';
+
+      const arquivosHtml = (Array.isArray(data.arquivos) ? data.arquivos : [])
+        .filter(a => a && typeof a.link === 'string' && /^https:\/\/(drive|docs)\.google\.com\//.test(a.link))
+        .map(a => `<a href="${escapeHtml(a.link)}" target="_blank" rel="noopener" style="display:inline-block;margin:6px 6px 0 0;padding:6px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;color:#1e3a8a;text-decoration:none;background:#f8fafc;">📎 ${escapeHtml(a.nome)}</a>`)
+        .join('');
 
       html += `
         <div style="border-left:4px solid #2563eb; padding-left:12px; margin-bottom:15px;">
-          <div style="font-size:12px; color:#64748b; font-weight:bold;">${escapeHtml(dateFormatted)} ${data.localizacao ? '📍' : ''}</div>
+          <div style="font-size:12px; color:#64748b; font-weight:bold; text-transform:capitalize;">${escapeHtml(dataTxt)} · ${escapeHtml(horaTxt)}</div>
+          ${local}
           <p style="white-space: pre-wrap; margin: 6px 0;">${escapeHtml(data.texto)}</p>
-          ${foto}
+          ${fotosHtml}
+          ${arquivosHtml}
         </div>
       `;
     });
@@ -435,7 +682,7 @@ function criarTelaLogin() {
     const loginMsg = document.getElementById('loginMsg');
     loginMsg.innerText = '';
     try {
-      await signInWithPopup(auth, new GoogleAuthProvider());
+      await entrarComGoogle();
     } catch (err) {
       console.error(err);
       const mensagens = {
@@ -468,6 +715,7 @@ onAuthStateChanged(auth, (user) => {
     telaLogin.overlay.style.display = 'flex';
     telaLogin.btnSair.style.display = 'none';
     if (cancelarEscuta) { cancelarEscuta(); cancelarEscuta = null; }
+    driveToken = null;
     const timeline = document.getElementById('timeline');
     if (timeline) timeline.innerHTML = "";
   }
