@@ -109,6 +109,15 @@ if (btnSaveChatToDiary) {
 
 // 2. DITADO NATIVO EM TEMPO REAL + DESLIGAMENTO FÍSICO DO MICROFONE
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const EH_ANDROID = /Android/i.test(navigator.userAgent);
+
+function normalizar(s) {
+  return s.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function desligarMicrofoneHardware() {
   if (mediaStream) {
@@ -135,14 +144,40 @@ function criarReconhecimento() {
   rec.lang = 'pt-BR';
 
   rec.onresult = (event) => {
-    let finais = '';
-    let parciais = '';
-    for (let i = 0; i < event.results.length; i++) {
-      const t = event.results[i][0].transcript;
-      if (event.results[i].isFinal) finais += t;
-      else parciais += t;
+    let ditado = '';
+
+    if (EH_ANDROID) {
+      // No Chrome do Android, cada resultado costuma vir como uma frase acumulada
+      // ("hoje foi um dia" -> "hoje foi um dia bem legal"...). Em vez de somar,
+      // mantemos só a versão mais completa de cada trecho.
+      const partes = [];
+      for (let i = 0; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript.trim();
+        if (!t) continue;
+        const anterior = partes[partes.length - 1];
+        if (anterior !== undefined) {
+          const a = normalizar(anterior);
+          const n = normalizar(t);
+          const mesmoInicio = a.split(' ').slice(0, 2).join(' ') === n.split(' ').slice(0, 2).join(' ');
+          if (n.startsWith(a) || a.startsWith(n) || mesmoInicio) {
+            if (n.length >= a.length) partes[partes.length - 1] = t;
+            continue;
+          }
+        }
+        partes.push(t);
+      }
+      ditado = partes.join(' ');
+    } else {
+      let finais = '';
+      let parciais = '';
+      for (let i = 0; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) finais += t;
+        else parciais += t;
+      }
+      ditado = (finais + parciais).trim();
     }
-    const ditado = (finais + parciais).trim();
+
     entryText.value = baseText + (baseText && ditado ? ' ' : '') + ditado;
     entryText.scrollTop = entryText.scrollHeight;
   };
