@@ -1,7 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getFirestore, collection, addDoc, getDocs, query, orderBy, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-// 1. CREDENCIAIS DO FIREBASE
+// SUAS CREDENCIAIS DO FIREBASE
 const firebaseConfig = {
   apiKey: "AIzaSyBoqyE_A9cAJl2uyBioXNBB8JF94BnStj4",
   authDomain: "meu-diario-app-b8bfd.firebaseapp.com",
@@ -11,8 +11,8 @@ const firebaseConfig = {
   appId: "1:376407447383:web:e41345dad532bbebf2d012"
 };
 
-// 2. CHAVE DA API GEMINI
-const GEMINI_API_KEY = "AQ.Ab8RN6K34LRRHh_lEUh7a9yP9xYeH9C9O8grqZV1AtlTu8eyJQ";
+// CHAVE GEMINI (Para o Chat com a IA)
+const GEMINI_API_KEY = "AIzaSyBoqyE_A9cAJl2uyBioXNBB8JF94BnStj4"; 
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
@@ -20,10 +20,8 @@ const db = getFirestore(app);
 let currentLocation = null;
 let chatHistory = [];
 let mediaStream = null;
-let mediaRecorder = null;
-let audioChunks = [];
-let isRecording = false;
 let recognition = null;
+let isRecording = false;
 
 const btnRecord = document.getElementById('btnRecord');
 const statusMsg = document.getElementById('statusMsg');
@@ -31,9 +29,8 @@ const btnSave = document.getElementById('btnSave');
 const btnLocation = document.getElementById('btnLocation');
 const entryText = document.getElementById('entryText');
 
-// CHAT COM A IA (GEMINI API)
+// 1. CONVERSA COM A IA (GEMINI API)
 async function chamarGemini(prompt) {
-  if (!GEMINI_API_KEY) return "Erro: Chave da API Gemini não configurada.";
   try {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
@@ -50,7 +47,7 @@ async function chamarGemini(prompt) {
   }
 }
 
-// INTERFACE DO CHAT
+// CHAT DE IA
 const chatBox = document.getElementById('chatBox');
 const chatInput = document.getElementById('chatInput');
 const btnSendChat = document.getElementById('btnSendChat');
@@ -94,87 +91,79 @@ if (btnSaveChatToDiary) {
   });
 }
 
-// 3. SISTEMA ROBUSTO DE RECONHECIMENTO E GRAVAÇÃO DE VOZ
+// 2. DITADO DE VOZ EM TEMPO REAL E DESLIGAMENTO DE HARDWARE
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-function desligarHardwareMicrofone() {
+function desligarMicrofoneHardware() {
   if (mediaStream) {
-    mediaStream.getTracks().forEach(track => {
-      track.stop();
-      track.enabled = false;
-    });
+    mediaStream.getTracks().forEach(track => track.stop());
     mediaStream = null;
   }
 }
 
 async function alternarGravação() {
   if (!isRecording) {
-    // INICIAR GRAVAÇÃO
+    // INICIAR DITADO
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      alert("Permissão de microfone negada ou indisponível.");
+      return;
+    }
+
+    if (!SpeechRecognition) {
+      alert("Seu navegador não suporta ditado por voz. Use o Google Chrome ou Edge.");
+      desligarMicrofoneHardware();
+      return;
+    }
+
+    recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = 'pt-BR';
+
+    recognition.onresult = (event) => {
+      let textoTranscrito = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          textoTranscrito += event.results[i][0].transcript;
+        }
+      }
+      if (textoTranscrito && entryText) {
+        entryText.value += (entryText.value ? ' ' : '') + textoTranscrito.trim();
+      }
+    };
+
+    recognition.onerror = (e) => {
+      console.error("Erro no ditado:", e);
+    };
+
+    recognition.onend = () => {
+      if (isRecording) {
+        try { recognition.start(); } catch(e){}
+      }
+    };
+
+    recognition.start();
     isRecording = true;
     btnRecord.classList.add('recording');
     btnRecord.innerText = "⏹️ Parar Gravação";
-    statusMsg.innerText = "🎙️ Gravando... Fale seu texto.";
-
-    if (SpeechRecognition) {
-      // DITADO EM TEMPO REAL (Chrome / Edge / Safari / Celulares)
-      try {
-        recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = 'pt-BR';
-
-        recognition.onresult = (event) => {
-          let textoAtual = '';
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            textoAtual += event.results[i][0].transcript;
-          }
-          if (entryText && textoAtual) {
-            entryText.value += (entryText.value ? ' ' : '') + textoAtual;
-          }
-        };
-
-        recognition.onerror = (e) => console.log("Erro no ditado:", e);
-        recognition.start();
-      } catch (e) {
-        console.error("Falha ao usar SpeechRecognition nativo:", e);
-      }
-    }
-
-    // CAPTURA DE SEGURANÇA VIA STREAM DE ÁUDIO
-    try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioChunks = [];
-      mediaRecorder = new MediaRecorder(mediaStream);
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunks.push(e.data);
-      };
-      mediaRecorder.start();
-    } catch (err) {
-      console.error("Erro no getUserMedia:", err);
-    }
+    statusMsg.innerText = "🎙️ Fale agora! Seu texto está sendo escrito em tempo real...";
 
   } else {
-    // PARAR GRAVAÇÃO E DESLIGAR MICROFONE
+    // PARAR DITADO E DESLIGAR MICROFONE
     isRecording = false;
     btnRecord.classList.remove('recording');
     btnRecord.innerText = "🎙️ Gravar Voz";
-    statusMsg.innerText = "⏳ Encerrando gravação e desligando microfone...";
 
-    try {
-      if (recognition) {
-        recognition.stop();
-        recognition = null;
-      }
-      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop();
-      }
-    } catch (err) {
-      console.error("Erro ao interromper gravadores:", err);
-    } finally {
-      // GARANTE O DESLIGAMENTO DO ÍCONE DE MICROFONE NO WINDOWS / CELULAR
-      desligarHardwareMicrofone();
-      statusMsg.innerText = "Microfone desligado com sucesso.";
+    if (recognition) {
+      recognition.onend = null;
+      recognition.stop();
+      recognition = null;
     }
+
+    desligarMicrofoneHardware();
+    statusMsg.innerText = "Gravação encerrada e microfone desligado com sucesso!";
   }
 }
 
@@ -182,7 +171,7 @@ if (btnRecord) {
   btnRecord.addEventListener('click', alternarGravação);
 }
 
-// 4. CAPTURA DE LOCALIZAÇÃO GPS
+// 3. CAPTURA DE LOCALIZAÇÃO GPS
 if (btnLocation) {
   btnLocation.addEventListener('click', () => {
     if (navigator.geolocation) {
@@ -204,7 +193,7 @@ function fileToBase64(file) {
   });
 }
 
-// 5. SALVAR REGISTRO NO FIREBASE
+// 4. SALVAR REGISTRO NO FIREBASE
 if (btnSave) {
   btnSave.addEventListener('click', async () => {
     let textoFinal = entryText.value;
@@ -247,7 +236,7 @@ if (btnSave) {
   });
 }
 
-// 6. HISTÓRICO EM TEMPO REAL
+// 5. HISTÓRICO EM TEMPO REAL
 function escutarEntradasEmTempoReal() {
   const timeline = document.getElementById('timeline');
   if (!timeline) return;
