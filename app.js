@@ -24,6 +24,7 @@ let mediaStream = null;
 let recognition = null;
 let isRecording = false;
 let baseText = "";
+let ultimoErroDitado = null;
 
 const btnRecord = document.getElementById('btnRecord');
 const statusMsg = document.getElementById('statusMsg');
@@ -147,13 +148,23 @@ function criarReconhecimento() {
   };
 
   rec.onerror = (e) => {
-    console.error("Erro no ditado:", e.error);
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-      alert("Permissão de microfone negada ou indisponível.");
-      finalizarUI();
-      statusMsg.innerText = "Microfone indisponível.";
-    }
+    console.error("Erro no ditado:", e.error, e.message);
     // 'no-speech' e 'aborted' são normais; o onend cuida do resto.
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+
+    const explicacoes = {
+      'not-allowed': 'Permissão de microfone negada. Libere o microfone nas configurações do site.',
+      'service-not-allowed': 'O navegador bloqueou o serviço de voz. Abra no Chrome (fora do app instalado) e permita o microfone.',
+      'network': 'Sem acesso ao serviço de voz do Google. Verifique a internet; Edge/Brave/VPN costumam causar isso. Tente no Chrome.',
+      'audio-capture': 'Nenhum microfone encontrado ou ele está em uso por outro programa.',
+      'language-not-supported': 'Idioma pt-BR não suportado neste navegador.'
+    };
+
+    ultimoErroDitado = e.error;
+    isRecording = false; // evita o reinício automático em loop
+    statusMsg.innerText = `⚠️ Erro no ditado (${e.error}): ${explicacoes[e.error] || 'erro desconhecido.'}`;
+    try { rec.abort(); } catch (err) {}
+    finalizarUI();
   };
 
   rec.onend = () => {
@@ -191,6 +202,7 @@ async function iniciarGravacao() {
   }
 
   baseText = entryText.value;
+  ultimoErroDitado = null;
   recognition = criarReconhecimento();
   isRecording = true;
 
@@ -230,7 +242,9 @@ function pararGravacao() {
       resolve();
     }
   }).then(() => {
-    statusMsg.innerText = "Gravação encerrada e microfone desligado com sucesso!";
+    if (!ultimoErroDitado) {
+      statusMsg.innerText = "Gravação encerrada e microfone desligado com sucesso!";
+    }
   });
 }
 
