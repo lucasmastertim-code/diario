@@ -19,8 +19,10 @@ const db = getFirestore(app);
 
 let currentLocation = null;
 let chatHistory = [];
-let recognition = null;
-let isListening = false;
+let mediaStream = null;
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
 
 const btnRecord = document.getElementById('btnRecord');
 const statusMsg = document.getElementById('statusMsg');
@@ -45,6 +47,38 @@ async function chamarGemini(prompt) {
     console.error(err);
     return "Erro ao comunicar com a IA.";
   }
+}
+
+// 2. TRANSCREVER ÁUDIO VIA GEMINI API
+async function transcreverAudio(blob) {
+  statusMsg.innerText = "⏳ IA processando e transcrevendo seu áudio...";
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(blob);
+    reader.onloadend = async () => {
+      const base64Audio = reader.result.split(',')[1];
+      try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: "Transcreva o áudio a seguir com precisão em Português do Brasil. Retorne APENAS o texto falado:" },
+                { inline_data: { mime_type: blob.type || "audio/webm", data: base64Audio } }
+              ]
+            }]
+          })
+        });
+        const data = await response.json();
+        const texto = data.candidates[0].content.parts[0].text;
+        resolve(texto);
+      } catch (e) {
+        console.error(e);
+        resolve("[Erro na transcrição]");
+      }
+    };
+  });
 }
 
 // LÓGICA DO CHAT DE IA
@@ -87,78 +121,68 @@ if (btnSaveChatToDiary) {
   btnSaveChatToDiary.addEventListener('click', () => {
     if (chatHistory.length === 0) return;
     entryText.value += `\n\n--- Conversa com IA ---\n` + chatHistory.join('\n');
-    statusMsg.innerText = "Conversa com IA copiada para a nova entrada!";
+    statusMsg.innerText = "Conversa copiada para o diário!";
   });
 }
 
-// 2. DITADO DE VOZ EM TEMPO REAL (NATIVO DO NAVEGADOR)
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+// 3. GRAVAÇÃO DE ÁUDIO E DESLIGAMENTO COMPLETO DO MICROFONE
+async function iniciarGravacao() {
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(mediaStream);
 
-if (SpeechRecognition) {
-  recognition = new SpeechRecognition();
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.lang = 'pt-BR';
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
 
-  recognition.onresult = (event) => {
-    let transcript = '';
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      transcript += event.results[i][0].transcript;
-    }
-    // Escreve o que você tá falando diretamente na caixa de texto
-    if (entryText) {
-      entryText.value += (entryText.value ? ' ' : '') + transcript;
-    }
-  };
+    mediaRecorder.onstop = async () => {
+      // FORÇAR O DESLIGAMENTO FÍSICO DO MICROFONE (Apaga o ícone na barra do Windows)
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+        mediaStream = null;
+      }
 
-  recognition.onerror = (event) => {
-    console.error('Erro no reconhecimento de voz:', event.error);
-    statusMsg.innerText = "Erro ao capturar voz.";
-    stopListening();
-  };
+      const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      const textoTranscrito = await transcreverAudio(audioBlob);
+      
+      if (entryText && textoTranscrito) {
+        entryText.value += (entryText.value ? '\n\n' : '') + textoTranscrito;
+      }
+      statusMsg.innerText = "Microfone desligado. Transcrição concluída!";
+    };
 
-  recognition.onend = () => {
-    if (isListening) {
-      stopListening();
-    }
-  };
+    mediaRecorder.start();
+    isRecording = true;
+    btnRecord.classList.add('recording');
+    btnRecord.innerText = "⏹️ Parar Gravação";
+    statusMsg.innerText = "🎙️ Gravando... Clique em Parar ao terminar para transcrever.";
+  } catch (err) {
+    console.error(err);
+    alert("Não foi possível acessar o microfone. Verifique as permissões no navegador.");
+  }
 }
 
-function startListening() {
-  if (!recognition) {
-    alert("Seu navegador não suporta o reconhecimento de voz nativo. Use o Chrome ou Edge.");
-    return;
-  }
-  recognition.start();
-  isListening = true;
-  btnRecord.classList.add('recording');
-  btnRecord.innerText = "⏹️ Parar Gravação";
-  statusMsg.innerText = "🎙️ Fale agora! O texto aparecerá na caixa em tempo real...";
-}
-
-function stopListening() {
-  if (recognition && isListening) {
-    recognition.stop();
-  }
-  isListening = false;
-  if (btnRecord) {
+function pararGravacao() {
+  if (mediaRecorder && isRecording) {
+    mediaRecorder.stop();
+    isRecording = false;
     btnRecord.classList.remove('recording');
     btnRecord.innerText = "🎙️ Gravar Voz";
   }
-  statusMsg.innerText = "Gravação encerrada e microfone desligado.";
 }
 
 if (btnRecord) {
   btnRecord.addEventListener('click', () => {
-    if (!isListening) {
-      startListening();
+    if (!isRecording) {
+      iniciarGravacao();
     } else {
-      stopListening();
+      pararGravacao();
     }
   });
 }
 
-// 3. CAPTURA DE LOCALIZAÇÃO GPS
+// 4. CAPTURA DE LOCALIZAÇÃO GPS
 if (btnLocation) {
   btnLocation.addEventListener('click', () => {
     if (navigator.geolocation) {
@@ -180,7 +204,7 @@ function fileToBase64(file) {
   });
 }
 
-// 4. SALVAR REGISTRO NO FIREBASE
+// 5. SALVAR REGISTRO NO FIREBASE
 if (btnSave) {
   btnSave.addEventListener('click', async () => {
     let textoFinal = entryText.value;
@@ -192,12 +216,12 @@ if (btnSave) {
       return;
     }
 
-    if (isListening) {
-      stopListening();
+    if (isRecording) {
+      pararGravacao();
     }
 
     btnSave.disabled = true;
-    statusMsg.innerText = "Salvando registro...";
+    statusMsg.innerText = "Salvando registro no banco de dados...";
 
     if (photo) {
       photoBase64 = await fileToBase64(photo);
@@ -216,14 +240,14 @@ if (btnSave) {
       currentLocation = null;
     } catch (err) {
       console.error(err);
-      statusMsg.innerText = "Erro ao salvar. Verifique as Regras do Firestore.";
+      statusMsg.innerText = "Erro ao salvar no banco de dados.";
     } finally {
       btnSave.disabled = false;
     }
   });
 }
 
-// 5. ESCUTAR EM TEMPO REAL (Sincronização instantânea)
+// 6. ESCUTAR EM TEMPO REAL
 function escutarEntradasEmTempoReal() {
   const timeline = document.getElementById('timeline');
   if (!timeline) return;
