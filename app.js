@@ -1,722 +1,156 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-import { getFirestore, collection, addDoc, query, orderBy, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
-import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyBoqyE_A9cAJl2uyBioXNBB8JF94BnStj4",
-  authDomain: "meu-diario-app-b8bfd.firebaseapp.com",
-  projectId: "meu-diario-app-b8bfd",
-  storageBucket: "meu-diario-app-b8bfd.firebasestorage.app",
-  messagingSenderId: "376407447383",
-  appId: "1:376407447383:web:e41345dad532bbebf2d012"
-};
-
-// Crie uma chave NOVA só para o Gemini (restrita ao seu domínio) e cole aqui.
-const GEMINI_API_KEY = "COLE_AQUI_SUA_NOVA_CHAVE_DO_GEMINI";
-// gemini-1.5-flash foi descontinuado; troque aqui se quiser outro modelo.
-const GEMINI_MODEL = "gemini-2.5-flash";
-
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const auth = getAuth(app);
-
-let currentLocation = null;
-let chatHistory = [];
-let mediaStream = null;
-let recognition = null;
-let isRecording = false;
-let baseText = "";
-let ultimoErroDitado = null;
-let ultimoTrechoAndroid = "";
-
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-const providerGoogle = new GoogleAuthProvider();
-providerGoogle.addScope(DRIVE_SCOPE);
-let driveToken = null;
-let driveTokenHora = 0;
-let pastaDriveId = null;
-let fotosPendentes = [];
-let arquivosPendentes = [];
-
-const APP_VERSION = "v6-journey-drive";
-console.log("app.js", APP_VERSION);
-
-const btnRecord = document.getElementById('btnRecord');
-const statusMsg = document.getElementById('statusMsg');
-const btnSave = document.getElementById('btnSave');
-const btnLocation = document.getElementById('btnLocation');
-const entryText = document.getElementById('entryText');
-if (statusMsg) statusMsg.innerText = `app.js ${APP_VERSION}`;
-
-function escapeHtml(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-// 1. CONVERSA COM A IA (GEMINI API)
-async function chamarGemini(prompt) {
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-      }
-    );
-    const data = await response.json();
-    if (!response.ok || data.error) {
-      console.error("Erro Gemini:", data.error || response.status);
-      return `Erro da IA: ${data.error?.message || response.status}`;
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meu Diário Pessoal & IA</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --primary: #1e3a8a;
+      --accent: #2563eb;
+      --border: #e2e8f0;
+      --text: #1e293b;
     }
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "A IA não retornou resposta.";
-  } catch (err) {
-    console.error(err);
-    return "Erro ao comunicar com a IA.";
-  }
-}
-
-// CHAT DE IA
-const chatBox = document.getElementById('chatBox');
-const chatInput = document.getElementById('chatInput');
-const btnSendChat = document.getElementById('btnSendChat');
-const btnInspire = document.getElementById('btnInspire');
-const btnSaveChatToDiary = document.getElementById('btnSaveChatToDiary');
-
-function appendMsg(sender, text) {
-  const msgDiv = document.createElement('div');
-  msgDiv.className = `msg ${sender === 'user' ? 'msg-user' : 'msg-ai'}`;
-  msgDiv.innerText = text;
-  chatBox.appendChild(msgDiv);
-  chatBox.scrollTop = chatBox.scrollHeight;
-  chatHistory.push(`${sender === 'user' ? 'Você' : 'IA'}: ${text}`);
-}
-
-if (btnSendChat) {
-  btnSendChat.addEventListener('click', async () => {
-    const text = chatInput.value.trim();
-    if (!text) return;
-    appendMsg('user', text);
-    chatInput.value = '';
-    const respostaIA = await chamarGemini(`Você é um assistente pessoal empático de diário. Responda brevemente e ajude o usuário a refletir sobre o seu dia: ${text}`);
-    appendMsg('ai', respostaIA);
-  });
-}
-
-if (btnInspire) {
-  btnInspire.addEventListener('click', async () => {
-    appendMsg('ai', "Pensando em uma pergunta de reflexão...");
-    const pergunta = await chamarGemini("Gere 2 perguntas reflexivas, curtas e interessantes para ajudar alguém a escrever no seu diário pessoal hoje.");
-    appendMsg('ai', pergunta);
-  });
-}
-
-if (btnSaveChatToDiary) {
-  btnSaveChatToDiary.addEventListener('click', () => {
-    if (chatHistory.length === 0) return;
-    entryText.value += `\n\n--- Conversa com IA ---\n` + chatHistory.join('\n');
-    statusMsg.innerText = "Conversa copiada para o diário!";
-  });
-}
-
-// 2. DITADO NATIVO EM TEMPO REAL + DESLIGAMENTO FÍSICO DO MICROFONE
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-const EH_ANDROID = /Android/i.test(navigator.userAgent);
-
-function desligarMicrofoneHardware() {
-  if (mediaStream) {
-    mediaStream.getTracks().forEach(track => {
-      track.stop();
-      track.enabled = false;
-    });
-    mediaStream = null;
-  }
-}
-
-function finalizarUI() {
-  recognition = null;
-  isRecording = false;
-  desligarMicrofoneHardware();
-  btnRecord.classList.remove('recording');
-  btnRecord.innerText = "🎙️ Gravar Voz";
-}
-
-function criarReconhecimento() {
-  const rec = new SpeechRecognition();
-  rec.continuous = !EH_ANDROID; // no Android, o modo contínuo repete o texto
-  rec.interimResults = !EH_ANDROID; // no Android, só resultados finais (evita repetição)
-  rec.lang = 'pt-BR';
-
-  rec.onresult = (event) => {
-    let ditado = '';
-
-    if (EH_ANDROID) {
-      // Android: modo não contínuo, cada sessão devolve uma frase.
-      // Usamos só o ÚLTIMO resultado (ignora os acumulados repetidos)
-      // e, quando ele fica final, "travamos" o texto em baseText.
-      const ultimo = event.results[event.results.length - 1];
-      const t = ultimo[0].transcript.trim();
-      if (!t || !ultimo.isFinal) return;
-      if (t === ultimoTrechoAndroid) return; // ignora evento repetido idêntico
-      ultimoTrechoAndroid = t;
-      baseText = baseText + (baseText ? ' ' : '') + t;
-      entryText.value = baseText;
-      entryText.scrollTop = entryText.scrollHeight;
-      return;
-    } else {
-      let finais = '';
-      let parciais = '';
-      for (let i = 0; i < event.results.length; i++) {
-        const t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) finais += t;
-        else parciais += t;
-      }
-      ditado = (finais + parciais).trim();
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 15px;
     }
-
-    entryText.value = baseText + (baseText && ditado ? ' ' : '') + ditado;
-    entryText.scrollTop = entryText.scrollHeight;
-  };
-
-  rec.onerror = (e) => {
-    console.error("Erro no ditado:", e.error, e.message);
-    // 'no-speech' e 'aborted' são normais; o onend cuida do resto.
-    if (e.error === 'no-speech' || e.error === 'aborted') return;
-
-    const explicacoes = {
-      'not-allowed': 'Permissão de microfone negada. Libere o microfone nas configurações do site.',
-      'service-not-allowed': 'O navegador bloqueou o serviço de voz. Abra no Chrome (fora do app instalado) e permita o microfone.',
-      'network': 'Sem acesso ao serviço de voz do Google. Verifique a internet; Edge/Brave/VPN costumam causar isso. Tente no Chrome.',
-      'audio-capture': 'Nenhum microfone encontrado ou ele está em uso por outro programa.',
-      'language-not-supported': 'Idioma pt-BR não suportado neste navegador.'
-    };
-
-    ultimoErroDitado = e.error;
-    isRecording = false; // evita o reinício automático em loop
-    statusMsg.innerText = `⚠️ Erro no ditado (${e.error}): ${explicacoes[e.error] || 'erro desconhecido.'}`;
-    try { rec.abort(); } catch (err) {}
-    finalizarUI();
-  };
-
-  rec.onend = () => {
-    // O Chrome encerra sozinho após silêncio: reinicia se o usuário ainda quer gravar.
-    if (isRecording) {
-      baseText = entryText.value;
-      ultimoTrechoAndroid = "";
-      try {
-        recognition = criarReconhecimento();
-        recognition.start();
-        return;
-      } catch (err) {
-        console.error(err);
-      }
+    .container { max-width: 700px; margin: 0 auto; }
+    h1 { text-align: center; color: var(--primary); margin-bottom: 20px; }
+    .card {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+      border: 1px solid var(--border);
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
     }
-    finalizarUI();
-  };
-
-  return rec;
-}
-
-async function iniciarGravacao() {
-  if (!SpeechRecognition) {
-    alert("Seu navegador não suporta ditado nativo. Abra no Google Chrome ou Microsoft Edge.");
-    return;
-  }
-
-  // Só para pedir permissão; o stream é encerrado logo em seguida
-  // (manter aberto junto com o reconhecimento falha em alguns celulares).
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    desligarMicrofoneHardware();
-  } catch (err) {
-    alert("Permissão de microfone negada ou indisponível.");
-    return;
-  }
-
-  baseText = entryText.value;
-  ultimoErroDitado = null;
-  recognition = criarReconhecimento();
-  isRecording = true;
-
-  try {
-    recognition.start();
-  } catch (err) {
-    console.error(err);
-    finalizarUI();
-    return;
-  }
-
-  btnRecord.classList.add('recording');
-  btnRecord.innerText = "⏹️ Parar Gravação";
-  statusMsg.innerText = "🎙️ Fale agora! O texto será inserido automaticamente...";
-}
-
-function pararGravacao() {
-  return new Promise((resolve) => {
-    isRecording = false;
-    if (!recognition) {
-      finalizarUI();
-      resolve();
-      return;
+    textarea {
+      width: 100%;
+      height: 110px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      box-sizing: border-box;
+      font-size: 15px;
+      resize: vertical;
+      outline: none;
     }
-    const rec = recognition;
-    const timer = setTimeout(() => { finalizarUI(); resolve(); }, 1500);
-    rec.onend = () => {
-      clearTimeout(timer);
-      finalizarUI();
-      resolve();
-    };
-    try {
-      rec.stop();
-    } catch (err) {
-      clearTimeout(timer);
-      finalizarUI();
-      resolve();
+    textarea:focus { border-color: var(--accent); }
+    .grid-tools {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 8px;
+      margin-top: 12px;
     }
-  }).then(() => {
-    if (!ultimoErroDitado) {
-      statusMsg.innerText = "Gravação encerrada e microfone desligado com sucesso!";
+    .btn-tool {
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      padding: 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
     }
-  });
-}
-
-async function alternarGravacao() {
-  if (!isRecording) await iniciarGravacao();
-  else await pararGravacao();
-}
-
-if (btnRecord) {
-  btnRecord.addEventListener('click', alternarGravacao);
-}
-
-// Garante que o microfone apague se a página for fechada/escondida
-window.addEventListener('pagehide', () => {
-  isRecording = false;
-  try { recognition?.abort(); } catch (e) {}
-  desligarMicrofoneHardware();
-});
-
-// 3. CAPTURA DE LOCALIZAÇÃO GPS (com o nome do lugar)
-async function nomeDoLugar(lat, lng) {
-  try {
-    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&accept-language=pt-BR&lat=${lat}&lon=${lng}`);
-    if (!r.ok) return null;
-    const d = await r.json();
-    const a = d.address || {};
-    const rua = a.road || a.pedestrian || a.footway || '';
-    const bairro = a.suburb || a.neighbourhood || a.quarter || '';
-    const cidade = a.city || a.town || a.village || a.municipality || '';
-    const partes = [rua, bairro, cidade, a.state].filter(Boolean);
-    return partes.length ? partes.join(', ') : (d.display_name || null);
-  } catch (err) {
-    console.error(err);
-    return null;
-  }
-}
-
-if (btnLocation) {
-  btnLocation.addEventListener('click', () => {
-    if (!navigator.geolocation) {
-      statusMsg.innerText = "Este navegador não tem GPS.";
-      return;
+    .btn-tool:hover { background: #eff6ff; }
+    input[type="file"] { display: none; }
+    .btn-save {
+      width: 100%;
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 14px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: bold;
+      margin-top: 15px;
+      cursor: pointer;
     }
-    statusMsg.innerText = "Obtendo localização...";
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      const lat = pos.coords.latitude;
-      const lng = pos.coords.longitude;
-      currentLocation = { lat, lng, nome: null };
-      statusMsg.innerText = "Buscando o nome do lugar...";
-      currentLocation.nome = await nomeDoLugar(lat, lng);
-      const rotulo = currentLocation.nome || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-      statusMsg.innerText = `📍 ${rotulo}`;
-    }, () => {
-      statusMsg.innerText = "Erro ao obter GPS. Permita o acesso à localização.";
-    }, { enableHighAccuracy: true, timeout: 15000 });
-  });
-}
+    .btn-save:hover { background: var(--accent); }
+    .status { font-size: 13px; color: #64748b; margin-top: 10px; text-align: center; }
+    .recording { background: #fee2e2 !important; color: #dc2626 !important; border-color: #fca5a5 !important; }
 
-// 4. FOTOS E ARQUIVOS (a interface extra é criada por aqui mesmo)
-const MAX_FOTOS = 4;
-const MAX_ARQUIVO_MB = 10;
-const photoInput = document.getElementById('photoInput');
-
-const previewBox = document.createElement('div');
-previewBox.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;margin:8px 0;';
-if (btnSave) btnSave.insertAdjacentElement('beforebegin', previewBox);
-
-const fileInput = document.createElement('input');
-fileInput.type = 'file';
-fileInput.multiple = true;
-fileInput.style.display = 'none';
-document.body.appendChild(fileInput);
-
-if (btnLocation) {
-  const btnArquivo = document.createElement('button');
-  btnArquivo.type = 'button';
-  btnArquivo.className = btnLocation.className;
-  btnArquivo.innerText = '📎 Arquivo';
-  btnArquivo.addEventListener('click', () => fileInput.click());
-  btnLocation.insertAdjacentElement('afterend', btnArquivo);
-}
-
-if (photoInput) {
-  photoInput.multiple = true;
-  photoInput.accept = 'image/*';
-}
-
-function formatarTamanho(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1048576) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / 1048576).toFixed(1)} MB`;
-}
-
-function botaoRemover(acao) {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.textContent = '✕';
-  b.style.cssText = 'position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:none;background:#ef4444;color:#fff;font-size:12px;cursor:pointer;padding:0;';
-  b.addEventListener('click', acao);
-  return b;
-}
-
-function renderPreview() {
-  previewBox.innerHTML = '';
-  fotosPendentes.forEach((f, i) => {
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'position:relative;';
-    const img = document.createElement('img');
-    const url = URL.createObjectURL(f);
-    img.src = url;
-    img.onload = () => URL.revokeObjectURL(url);
-    img.style.cssText = 'width:72px;height:72px;object-fit:cover;border-radius:8px;display:block;';
-    wrap.appendChild(img);
-    wrap.appendChild(botaoRemover(() => { fotosPendentes.splice(i, 1); renderPreview(); }));
-    previewBox.appendChild(wrap);
-  });
-  arquivosPendentes.forEach((f, i) => {
-    const chip = document.createElement('div');
-    chip.style.cssText = 'position:relative;padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;background:#fff;max-width:100%;word-break:break-all;';
-    chip.textContent = `📎 ${f.name} (${formatarTamanho(f.size)})`;
-    chip.appendChild(botaoRemover(() => { arquivosPendentes.splice(i, 1); renderPreview(); }));
-    previewBox.appendChild(chip);
-  });
-}
-
-if (photoInput) {
-  photoInput.addEventListener('change', () => {
-    for (const f of Array.from(photoInput.files)) {
-      if (!f.type.startsWith('image/')) continue;
-      if (fotosPendentes.length >= MAX_FOTOS) {
-        statusMsg.innerText = `Máximo de ${MAX_FOTOS} fotos por entrada.`;
-        break;
-      }
-      fotosPendentes.push(f);
+    /* Estilos do Chat com IA */
+    .chat-box {
+      height: 200px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fafafa;
+      margin-bottom: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
-    photoInput.value = '';
-    renderPreview();
-  });
-}
-
-fileInput.addEventListener('change', () => {
-  for (const f of Array.from(fileInput.files)) {
-    if (f.size > MAX_ARQUIVO_MB * 1048576) {
-      statusMsg.innerText = `"${f.name}" passa de ${MAX_ARQUIVO_MB} MB e foi ignorado.`;
-      continue;
+    .msg { padding: 8px 12px; border-radius: 8px; max-width: 85%; font-size: 14px; line-height: 1.4; }
+    .msg-user { background: #dbeafe; color: #1e40af; align-self: flex-end; }
+    .msg-ai { background: #e2e8f0; color: #0f172a; align-self: flex-start; }
+    .chat-input-row { display: flex; gap: 8px; }
+    .chat-input-row input {
+      flex: 1;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      outline: none;
     }
-    arquivosPendentes.push(f);
-  }
-  fileInput.value = '';
-  renderPreview();
-});
+  </style>
 
-// Fotos ficam no próprio banco (reduzidas para caber no limite de ~1 MB)
-function comprimirImagem(file, maxLado, qualidade) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = reject;
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = reject;
-      img.onload = () => {
-        const escala = Math.min(1, maxLado / Math.max(img.width, img.height));
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.round(img.width * escala);
-        canvas.height = Math.round(img.height * escala);
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', qualidade));
-      };
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(file);
-  });
-}
+  <script type="module" src="app.js"></script>
+</head>
+<body>
 
-async function prepararFotos() {
-  const tentativas = [[1024, 0.7], [800, 0.55], [600, 0.45]];
-  for (const [lado, qualidade] of tentativas) {
-    const lista = [];
-    for (const f of fotosPendentes) lista.push(await comprimirImagem(f, lado, qualidade));
-    const total = lista.reduce((soma, x) => soma + x.length, 0);
-    if (total < 800000) return lista;
-  }
-  throw new Error('As fotos ficaram pesadas demais. Remova algumas.');
-}
+<div class="container">
+  <h1>📖 Meu Diário Pessoal & IA</h1>
 
-// Arquivos vão para a pasta "Meu Diário" no Google Drive da própria conta
-function tokenDriveValido() {
-  return driveToken && (Date.now() - driveTokenHora) < 50 * 60 * 1000;
-}
+  <!-- PAINEL DE CONVERSA COM A IA -->
+  <div class="card">
+    <h3>🤖 Conversar com a IA</h3>
+    <div class="chat-box" id="chatBox">
+      <div class="msg msg-ai">Olá! Como posso ajudar na sua reflexão de hoje? Você pode conversar comigo ou pedir sugestões de escrita.</div>
+    </div>
+    <div class="chat-input-row">
+      <input type="text" id="chatInput" placeholder="Converse ou tire dúvidas com a IA...">
+      <button class="btn-tool" id="btnSendChat">Enviar</button>
+    </div>
+    <div style="margin-top: 8px; display: flex; gap: 8px;">
+      <button class="btn-tool" id="btnInspire" style="flex:1;">💡 Sugerir Pergunta</button>
+      <button class="btn-tool" id="btnSaveChatToDiary" style="flex:1;">📌 Salvar Chat no Diário</button>
+    </div>
+  </div>
 
-async function entrarComGoogle() {
-  const result = await signInWithPopup(auth, providerGoogle);
-  const cred = GoogleAuthProvider.credentialFromResult(result);
-  driveToken = cred && cred.accessToken ? cred.accessToken : null;
-  driveTokenHora = Date.now();
-  pastaDriveId = null;
-}
+  <!-- REGISTRO DO DIÁRIO -->
+  <div class="card">
+    <h3>✍️ Nova Entrada</h3>
+    <textarea id="entryText" placeholder="Escreva como foi seu dia ou grave um áudio..."></textarea>
 
-async function driveFetch(url, opcoes = {}) {
-  const r = await fetch(url, {
-    ...opcoes,
-    headers: { ...(opcoes.headers || {}), Authorization: `Bearer ${driveToken}` }
-  });
-  if (!r.ok) {
-    let msg = String(r.status);
-    try {
-      const e = await r.json();
-      msg = (e.error && e.error.message) || msg;
-    } catch (x) {}
-    const err = new Error(msg);
-    err.status = r.status;
-    throw err;
-  }
-  return r.json();
-}
+    <div class="grid-tools">
+      <button class="btn-tool" id="btnRecord">🎙️ Gravar Voz</button>
+      <label class="btn-tool" for="photoInput">📷 Foto</label>
+      <input type="file" id="photoInput" accept="image/*">
+      <button class="btn-tool" id="btnLocation">📍 Local</button>
+    </div>
 
-async function garantirPastaDrive() {
-  if (pastaDriveId) return pastaDriveId;
-  const q = encodeURIComponent("name='Meu Diário' and mimeType='application/vnd.google-apps.folder' and trashed=false");
-  const lista = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&spaces=drive`);
-  if (lista.files && lista.files.length) {
-    pastaDriveId = lista.files[0].id;
-    return pastaDriveId;
-  }
-  const nova = await driveFetch('https://www.googleapis.com/drive/v3/files?fields=id', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Meu Diário', mimeType: 'application/vnd.google-apps.folder' })
-  });
-  pastaDriveId = nova.id;
-  return pastaDriveId;
-}
+    <div class="status" id="statusMsg">Pronto para novo registro</div>
+    <button class="btn-save" id="btnSave">Salvar Entrada</button>
+  </div>
 
-async function enviarArquivoDrive(file, pastaId) {
-  const limite = 'diario' + Date.now() + Math.random().toString(16).slice(2);
-  const metadados = { name: file.name, parents: [pastaId] };
-  const corpo = new Blob([
-    `--${limite}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadados)}\r\n`,
-    `--${limite}\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`,
-    file,
-    `\r\n--${limite}--`
-  ]);
-  const r = await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,size,webViewLink', {
-    method: 'POST',
-    headers: { 'Content-Type': `multipart/related; boundary=${limite}` },
-    body: corpo
-  });
-  return { id: r.id, nome: r.name, tipo: r.mimeType, tamanho: Number(r.size) || file.size, link: r.webViewLink };
-}
+  <!-- HISTÓRICO EM TEMPO REAL -->
+  <div class="card">
+    <h3>📌 Histórico</h3>
+    <div id="timeline">Carregando entradas...</div>
+  </div>
+</div>
 
-// SALVAR REGISTRO NO FIREBASE
-if (btnSave) {
-  btnSave.addEventListener('click', async () => {
-    // O pop-up do Google precisa abrir logo no clique, antes de qualquer outra espera
-    if (arquivosPendentes.length && !tokenDriveValido()) {
-      try {
-        statusMsg.innerText = "Conectando ao Google Drive...";
-        await entrarComGoogle();
-      } catch (err) {
-        console.error(err);
-        statusMsg.innerText = "Não foi possível conectar ao Google Drive. Permita pop-ups e o acesso ao Drive.";
-        return;
-      }
-    }
-
-    if (isRecording) await pararGravacao();
-
-    const textoFinal = entryText.value.trim();
-    if (!textoFinal && !fotosPendentes.length && !arquivosPendentes.length) {
-      alert("Escreva algo, grave um áudio ou anexe algo antes de salvar.");
-      return;
-    }
-
-    btnSave.disabled = true;
-    try {
-      statusMsg.innerText = "Preparando a entrada...";
-      const fotos = await prepararFotos();
-
-      const arquivos = [];
-      if (arquivosPendentes.length) {
-        const pastaId = await garantirPastaDrive();
-        for (let i = 0; i < arquivosPendentes.length; i++) {
-          statusMsg.innerText = `Enviando arquivo ${i + 1} de ${arquivosPendentes.length} para o Google Drive...`;
-          arquivos.push(await enviarArquivoDrive(arquivosPendentes[i], pastaId));
-        }
-      }
-
-      statusMsg.innerText = "Salvando registro no banco de dados...";
-      await addDoc(collection(db, "diario_entradas"), {
-        texto: textoFinal,
-        uid: auth.currentUser ? auth.currentUser.uid : null,
-        data: new Date().toISOString(),
-        localizacao: currentLocation,
-        fotos,
-        arquivos
-      });
-
-      statusMsg.innerText = "Entrada salva com sucesso!";
-      entryText.value = "";
-      baseText = "";
-      currentLocation = null;
-      fotosPendentes = [];
-      arquivosPendentes = [];
-      renderPreview();
-    } catch (err) {
-      console.error(err);
-      if (err.status === 401) driveToken = null;
-      if (err.status === 404) pastaDriveId = null;
-      let msg = err.message || 'tente de novo';
-      if (err.status === 403 && /not been used|disabled|accessNotConfigured/i.test(msg)) {
-        msg = 'a API do Google Drive não está ativada no projeto.';
-      }
-      statusMsg.innerText = `Erro ao salvar: ${msg}`;
-    } finally {
-      btnSave.disabled = false;
-    }
-  });
-}
-
-// 5. HISTÓRICO EM TEMPO REAL
-function escutarEntradasEmTempoReal() {
-  const timeline = document.getElementById('timeline');
-  if (!timeline) return;
-
-  const q = query(collection(db, "diario_entradas"), orderBy("data", "desc"));
-
-  return onSnapshot(q, (querySnapshot) => {
-    if (querySnapshot.empty) {
-      timeline.innerHTML = "<p>Nenhuma entrada salva ainda.</p>";
-      return;
-    }
-
-    let html = "";
-    querySnapshot.forEach((docSnap) => {
-      const data = docSnap.data();
-      const quando = new Date(data.data);
-      const dataTxt = quando.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
-      const horaTxt = quando.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-
-      let local = '';
-      if (data.localizacao && typeof data.localizacao.lat === 'number') {
-        const l = data.localizacao;
-        const rotulo = l.nome || `${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}`;
-        local = `<div style="font-size:13px;color:#475569;margin-top:2px;">📍 <a href="https://www.google.com/maps?q=${l.lat},${l.lng}" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;">${escapeHtml(rotulo)}</a></div>`;
-      }
-
-      const listaFotos = [].concat(Array.isArray(data.fotos) ? data.fotos : [], data.fotoBase64 ? [data.fotoBase64] : [])
-        .filter(f => typeof f === 'string' && f.startsWith('data:image/'));
-      const larguraFoto = listaFotos.length > 1 ? '48%' : '100%';
-      const fotosHtml = listaFotos.length
-        ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">${listaFotos.map(f => `<img src="${f}" style="max-width:${larguraFoto};border-radius:8px;">`).join('')}</div>`
-        : '';
-
-      const arquivosHtml = (Array.isArray(data.arquivos) ? data.arquivos : [])
-        .filter(a => a && typeof a.link === 'string' && /^https:\/\/(drive|docs)\.google\.com\//.test(a.link))
-        .map(a => `<a href="${escapeHtml(a.link)}" target="_blank" rel="noopener" style="display:inline-block;margin:6px 6px 0 0;padding:6px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;color:#1e3a8a;text-decoration:none;background:#f8fafc;">📎 ${escapeHtml(a.nome)}</a>`)
-        .join('');
-
-      html += `
-        <div style="border-left:4px solid #2563eb; padding-left:12px; margin-bottom:15px;">
-          <div style="font-size:12px; color:#64748b; font-weight:bold; text-transform:capitalize;">${escapeHtml(dataTxt)} · ${escapeHtml(horaTxt)}</div>
-          ${local}
-          <p style="white-space: pre-wrap; margin: 6px 0;">${escapeHtml(data.texto)}</p>
-          ${fotosHtml}
-          ${arquivosHtml}
-        </div>
-      `;
-    });
-    timeline.innerHTML = html;
-  }, (error) => {
-    console.error(error);
-    timeline.innerHTML = "<p>Erro ao carregar o histórico.</p>";
-  });
-}
-
-// 6. LOGIN COM GOOGLE
-let cancelarEscuta = null;
-
-function criarTelaLogin() {
-  const overlay = document.createElement('div');
-  overlay.id = 'loginOverlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:#f1f5f9;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9999;padding:24px;text-align:center;';
-  overlay.innerHTML = `
-    <h2 style="margin:0;color:#1e293b;">📔 Meu Diário</h2>
-    <p style="margin:0;color:#64748b;">Entre com sua conta Google para acessar.</p>
-    <button id="btnLogin" style="padding:14px 24px;font-size:16px;font-weight:bold;border:none;border-radius:12px;background:#1e3a8a;color:#fff;cursor:pointer;">Entrar com Google</button>
-    <p id="loginMsg" style="margin:0;color:#b91c1c;font-size:14px;max-width:420px;"></p>
-  `;
-  overlay.style.display = 'none';
-  document.body.appendChild(overlay);
-
-  const btnSair = document.createElement('button');
-  btnSair.id = 'btnSair';
-  btnSair.innerText = 'Sair';
-  btnSair.style.cssText = 'position:fixed;top:8px;right:8px;z-index:1000;padding:6px 12px;font-size:13px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#334155;cursor:pointer;display:none;';
-  document.body.appendChild(btnSair);
-
-  document.getElementById('btnLogin').addEventListener('click', async () => {
-    const loginMsg = document.getElementById('loginMsg');
-    loginMsg.innerText = '';
-    try {
-      await entrarComGoogle();
-    } catch (err) {
-      console.error(err);
-      const mensagens = {
-        'auth/popup-blocked': 'O navegador bloqueou a janela de login. Permita pop-ups para este site e tente de novo.',
-        'auth/popup-closed-by-user': 'Login cancelado.',
-        'auth/cancelled-popup-request': 'Login cancelado.',
-        'auth/unauthorized-domain': 'Domínio não autorizado: no Firebase, vá em Authentication > Configurações > Domínios autorizados e adicione tertim-code.github.io.',
-        'auth/operation-not-allowed': 'O login com Google não está ativado: no Firebase, vá em Authentication > Método de login e ative o Google.'
-      };
-      loginMsg.innerText = mensagens[err.code] || `Erro no login (${err.code || 'desconhecido'}).`;
-    }
-  });
-
-  btnSair.addEventListener('click', async () => {
-    if (isRecording) await pararGravacao();
-    await signOut(auth);
-  });
-
-  return { overlay, btnSair };
-}
-
-const telaLogin = criarTelaLogin();
-
-onAuthStateChanged(auth, (user) => {
-  if (user) {
-    telaLogin.overlay.style.display = 'none';
-    telaLogin.btnSair.style.display = 'block';
-    if (!cancelarEscuta) cancelarEscuta = escutarEntradasEmTempoReal() || null;
-  } else {
-    telaLogin.overlay.style.display = 'flex';
-    telaLogin.btnSair.style.display = 'none';
-    if (cancelarEscuta) { cancelarEscuta(); cancelarEscuta = null; }
-    driveToken = null;
-    const timeline = document.getElementById('timeline');
-    if (timeline) timeline.innerHTML = "";
-  }
-});
+</body>
+</html>
