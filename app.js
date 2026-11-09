@@ -1,5 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getFirestore, collection, addDoc, query, orderBy, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBoqyE_A9cAJl2uyBioXNBB8JF94BnStj4",
@@ -17,6 +18,7 @@ const GEMINI_MODEL = "gemini-2.5-flash";
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const auth = getAuth(app);
 
 let currentLocation = null;
 let chatHistory = [];
@@ -27,7 +29,7 @@ let baseText = "";
 let ultimoErroDitado = null;
 let ultimoTrechoAndroid = "";
 
-const APP_VERSION = "v4-android-so-final";
+const APP_VERSION = "v5-login-google";
 console.log("app.js", APP_VERSION);
 
 const btnRecord = document.getElementById('btnRecord');
@@ -351,6 +353,7 @@ if (btnSave) {
 
       await addDoc(collection(db, "diario_entradas"), {
         texto: textoFinal,
+        uid: auth.currentUser ? auth.currentUser.uid : null,
         data: new Date().toISOString(),
         localizacao: currentLocation,
         fotoBase64: photoBase64
@@ -377,7 +380,7 @@ function escutarEntradasEmTempoReal() {
 
   const q = query(collection(db, "diario_entradas"), orderBy("data", "desc"));
 
-  onSnapshot(q, (querySnapshot) => {
+  return onSnapshot(q, (querySnapshot) => {
     if (querySnapshot.empty) {
       timeline.innerHTML = "<p>Nenhuma entrada salva ainda.</p>";
       return;
@@ -406,4 +409,66 @@ function escutarEntradasEmTempoReal() {
   });
 }
 
-escutarEntradasEmTempoReal();
+// 6. LOGIN COM GOOGLE
+let cancelarEscuta = null;
+
+function criarTelaLogin() {
+  const overlay = document.createElement('div');
+  overlay.id = 'loginOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:#f1f5f9;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9999;padding:24px;text-align:center;';
+  overlay.innerHTML = `
+    <h2 style="margin:0;color:#1e293b;">📔 Meu Diário</h2>
+    <p style="margin:0;color:#64748b;">Entre com sua conta Google para acessar.</p>
+    <button id="btnLogin" style="padding:14px 24px;font-size:16px;font-weight:bold;border:none;border-radius:12px;background:#1e3a8a;color:#fff;cursor:pointer;">Entrar com Google</button>
+    <p id="loginMsg" style="margin:0;color:#b91c1c;font-size:14px;max-width:420px;"></p>
+  `;
+  overlay.style.display = 'none';
+  document.body.appendChild(overlay);
+
+  const btnSair = document.createElement('button');
+  btnSair.id = 'btnSair';
+  btnSair.innerText = 'Sair';
+  btnSair.style.cssText = 'position:fixed;top:8px;right:8px;z-index:1000;padding:6px 12px;font-size:13px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#334155;cursor:pointer;display:none;';
+  document.body.appendChild(btnSair);
+
+  document.getElementById('btnLogin').addEventListener('click', async () => {
+    const loginMsg = document.getElementById('loginMsg');
+    loginMsg.innerText = '';
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    } catch (err) {
+      console.error(err);
+      const mensagens = {
+        'auth/popup-blocked': 'O navegador bloqueou a janela de login. Permita pop-ups para este site e tente de novo.',
+        'auth/popup-closed-by-user': 'Login cancelado.',
+        'auth/cancelled-popup-request': 'Login cancelado.',
+        'auth/unauthorized-domain': 'Domínio não autorizado: no Firebase, vá em Authentication > Configurações > Domínios autorizados e adicione tertim-code.github.io.',
+        'auth/operation-not-allowed': 'O login com Google não está ativado: no Firebase, vá em Authentication > Método de login e ative o Google.'
+      };
+      loginMsg.innerText = mensagens[err.code] || `Erro no login (${err.code || 'desconhecido'}).`;
+    }
+  });
+
+  btnSair.addEventListener('click', async () => {
+    if (isRecording) await pararGravacao();
+    await signOut(auth);
+  });
+
+  return { overlay, btnSair };
+}
+
+const telaLogin = criarTelaLogin();
+
+onAuthStateChanged(auth, (user) => {
+  if (user) {
+    telaLogin.overlay.style.display = 'none';
+    telaLogin.btnSair.style.display = 'block';
+    if (!cancelarEscuta) cancelarEscuta = escutarEntradasEmTempoReal() || null;
+  } else {
+    telaLogin.overlay.style.display = 'flex';
+    telaLogin.btnSair.style.display = 'none';
+    if (cancelarEscuta) { cancelarEscuta(); cancelarEscuta = null; }
+    const timeline = document.getElementById('timeline');
+    if (timeline) timeline.innerHTML = "";
+  }
+});
