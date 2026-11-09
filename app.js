@@ -111,14 +111,6 @@ if (btnSaveChatToDiary) {
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const EH_ANDROID = /Android/i.test(navigator.userAgent);
 
-function normalizar(s) {
-  return s.toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9 ]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 function desligarMicrofoneHardware() {
   if (mediaStream) {
     mediaStream.getTracks().forEach(track => {
@@ -139,7 +131,7 @@ function finalizarUI() {
 
 function criarReconhecimento() {
   const rec = new SpeechRecognition();
-  rec.continuous = true;
+  rec.continuous = !EH_ANDROID; // no Android, o modo contínuo repete o texto
   rec.interimResults = true;
   rec.lang = 'pt-BR';
 
@@ -147,26 +139,16 @@ function criarReconhecimento() {
     let ditado = '';
 
     if (EH_ANDROID) {
-      // No Chrome do Android, cada resultado costuma vir como uma frase acumulada
-      // ("hoje foi um dia" -> "hoje foi um dia bem legal"...). Em vez de somar,
-      // mantemos só a versão mais completa de cada trecho.
-      const partes = [];
-      for (let i = 0; i < event.results.length; i++) {
-        const t = event.results[i][0].transcript.trim();
-        if (!t) continue;
-        const anterior = partes[partes.length - 1];
-        if (anterior !== undefined) {
-          const a = normalizar(anterior);
-          const n = normalizar(t);
-          const mesmoInicio = a.split(' ').slice(0, 2).join(' ') === n.split(' ').slice(0, 2).join(' ');
-          if (n.startsWith(a) || a.startsWith(n) || mesmoInicio) {
-            if (n.length >= a.length) partes[partes.length - 1] = t;
-            continue;
-          }
-        }
-        partes.push(t);
-      }
-      ditado = partes.join(' ');
+      // Android: modo não contínuo, cada sessão devolve uma frase.
+      // Usamos só o ÚLTIMO resultado (ignora os acumulados repetidos)
+      // e, quando ele fica final, "travamos" o texto em baseText.
+      const ultimo = event.results[event.results.length - 1];
+      const t = ultimo[0].transcript.trim();
+      const novo = baseText + (baseText && t ? ' ' : '') + t;
+      entryText.value = novo;
+      if (ultimo.isFinal) baseText = novo;
+      entryText.scrollTop = entryText.scrollHeight;
+      return;
     } else {
       let finais = '';
       let parciais = '';
