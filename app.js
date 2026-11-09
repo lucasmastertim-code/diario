@@ -1,7 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getFirestore, collection, addDoc, getDocs, query, orderBy, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-// SUAS CREDENCIAIS DO FIREBASE
 const firebaseConfig = {
   apiKey: "AIzaSyBoqyE_A9cAJl2uyBioXNBB8JF94BnStj4",
   authDomain: "meu-diario-app-b8bfd.firebaseapp.com",
@@ -11,7 +10,6 @@ const firebaseConfig = {
   appId: "1:376407447383:web:e41345dad532bbebf2d012"
 };
 
-// CHAVE GEMINI (Para o Chat com a IA)
 const GEMINI_API_KEY = "AIzaSyBoqyE_A9cAJl2uyBioXNBB8JF94BnStj4"; 
 
 const app = initializeApp(firebaseConfig);
@@ -35,9 +33,7 @@ async function chamarGemini(prompt) {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
-      })
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
     });
     const data = await response.json();
     return data.candidates[0].content.parts[0].text;
@@ -69,7 +65,6 @@ if (btnSendChat) {
     if (!text) return;
     appendMsg('user', text);
     chatInput.value = '';
-    
     const respostaIA = await chamarGemini(`Você é um assistente pessoal empático de diário. Responda brevemente e ajude o usuário a refletir sobre o seu dia: ${text}`);
     appendMsg('ai', respostaIA);
   });
@@ -91,19 +86,21 @@ if (btnSaveChatToDiary) {
   });
 }
 
-// 2. DITADO DE VOZ EM TEMPO REAL E DESLIGAMENTO DE HARDWARE
+// 2. DITADO NATIVO EM TEMPO REAL E DESLIGAMENTO DE MICROFONE
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 function desligarMicrofoneHardware() {
   if (mediaStream) {
-    mediaStream.getTracks().forEach(track => track.stop());
+    mediaStream.getTracks().forEach(track => {
+      track.stop();
+      track.enabled = false;
+    });
     mediaStream = null;
   }
 }
 
-async function alternarGravação() {
+async function alternarGravacao() {
   if (!isRecording) {
-    // INICIAR DITADO
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) {
@@ -112,22 +109,20 @@ async function alternarGravação() {
     }
 
     if (!SpeechRecognition) {
-      alert("Seu navegador não suporta ditado por voz. Use o Google Chrome ou Edge.");
+      alert("Seu navegador não suporta ditado nativo. Abra no Google Chrome ou Microsoft Edge.");
       desligarMicrofoneHardware();
       return;
     }
 
     recognition = new SpeechRecognition();
     recognition.continuous = true;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
     recognition.lang = 'pt-BR';
 
     recognition.onresult = (event) => {
       let textoTranscrito = '';
       for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          textoTranscrito += event.results[i][0].transcript;
-        }
+        textoTranscrito += event.results[i][0].transcript;
       }
       if (textoTranscrito && entryText) {
         entryText.value += (entryText.value ? ' ' : '') + textoTranscrito.trim();
@@ -138,26 +133,18 @@ async function alternarGravação() {
       console.error("Erro no ditado:", e);
     };
 
-    recognition.onend = () => {
-      if (isRecording) {
-        try { recognition.start(); } catch(e){}
-      }
-    };
-
     recognition.start();
     isRecording = true;
     btnRecord.classList.add('recording');
     btnRecord.innerText = "⏹️ Parar Gravação";
-    statusMsg.innerText = "🎙️ Fale agora! Seu texto está sendo escrito em tempo real...";
+    statusMsg.innerText = "🎙️ Fale agora! O texto será inserido automaticamente...";
 
   } else {
-    // PARAR DITADO E DESLIGAR MICROFONE
     isRecording = false;
     btnRecord.classList.remove('recording');
     btnRecord.innerText = "🎙️ Gravar Voz";
 
     if (recognition) {
-      recognition.onend = null;
       recognition.stop();
       recognition = null;
     }
@@ -168,7 +155,7 @@ async function alternarGravação() {
 }
 
 if (btnRecord) {
-  btnRecord.addEventListener('click', alternarGravação);
+  btnRecord.addEventListener('click', alternarGravacao);
 }
 
 // 3. CAPTURA DE LOCALIZAÇÃO GPS
@@ -206,7 +193,7 @@ if (btnSave) {
     }
 
     if (isRecording) {
-      await alternarGravação();
+      await alternarGravacao();
     }
 
     btnSave.disabled = true;
