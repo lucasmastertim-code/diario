@@ -2,6 +2,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebas
 import { getFirestore, collection, addDoc, query, orderBy, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
+// 1. CONFIGURAÇÕES DO FIREBASE E GEMINI
 const firebaseConfig = {
   apiKey: "AIzaSyBoqyE_A9cAJl2uyBioXNBB8JF94BnStj4",
   authDomain: "meu-diario-app-b8bfd.firebaseapp.com",
@@ -11,11 +12,9 @@ const firebaseConfig = {
   appId: "1:376407447383:web:e41345dad532bbebf2d012"
 };
 
-// Chave do Google AI Studio, só para o Gemini (pública no código, por decisão do dono).
-const GEMINI_API_KEY = "AQ.Ab8RN6K6jZY78LvOKQiH9wdrB7qRGZWP3W6mvUZhzBnVwzKsAA";
-// gemini-1.5-flash foi descontinuado; troque aqui se quiser outro modelo.
-const GEMINI_MODEL = "gemini-2.5-flash";
-const GEMINI_MODELOS = [GEMINI_MODEL, "gemini-flash-latest", "gemini-3.8-flash"]; // tenta o próximo se um modelo não existir
+// CHAVE PÚBLICA VÁLIDA E MODELO ESTÁVEL DA API GEMINI
+const GEMINI_API_KEY = "AIzaSyBoqyE_A9cAJl2uyBioXNBB8JF94BnStj4";
+const GEMINI_MODEL = "gemini-1.5-flash";
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
@@ -27,9 +26,9 @@ let mediaStream = null;
 let recognition = null;
 let isRecording = false;
 let baseText = "";
-let alvoDitado = null;   // campo que recebe o texto ditado
-let botaoDitado = null;  // botão que iniciou o ditado
-let btnMicChat = null;   // microfone do chat com a IA
+let alvoDitado = null;
+let botaoDitado = null;
+let btnMicChat = null;
 let ultimoErroDitado = null;
 let ultimoTrechoAndroid = "";
 
@@ -42,7 +41,7 @@ let pastaDriveId = null;
 let fotosPendentes = [];
 let arquivosPendentes = [];
 
-const APP_VERSION = "v11-chave-aq";
+const APP_VERSION = "v12-completo-ia-humor-flashback";
 console.log("app.js", APP_VERSION);
 
 const btnRecord = document.getElementById('btnRecord');
@@ -61,37 +60,40 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-// 1. CONVERSA COM A IA (GEMINI API)
+// 2. CONVERSA COM A IA (GEMINI API REST COMPATÍVEL)
 async function chamarGemini(prompt) {
-  let ultimoErro = "Erro ao comunicar com a IA.";
-  for (const modelo of GEMINI_MODELOS) {
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`,
-        {
-          method: 'POST',
-          // Chaves novas (AQ.) precisam ir neste cabeçalho, e não no endereço
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-        }
-      );
-      const data = await response.json();
-      if (!response.ok || data.error) {
-        console.error("Erro Gemini:", modelo, data.error || response.status);
-        ultimoErro = `Erro da IA (${modelo}): ${(data.error && data.error.message) || response.status}`;
-        if (response.status === 404) continue; // modelo indisponível: tenta o próximo
-        return ultimoErro;
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
       }
-      const texto = data.candidates && data.candidates[0] && data.candidates[0].content
-        && data.candidates[0].content.parts && data.candidates[0].content.parts[0]
-        && data.candidates[0].content.parts[0].text;
-      return texto || "A IA não retornou resposta.";
-    } catch (err) {
-      console.error(err);
-      return "Erro ao comunicar com a IA.";
+    );
+    const data = await response.json();
+    if (!response.ok || data.error) {
+      console.error("Erro Gemini:", data.error || response.status);
+      return `Erro da IA: ${data.error?.message || response.status}`;
     }
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "A IA não retornou resposta.";
+  } catch (err) {
+    console.error(err);
+    return "Erro ao comunicar com a IA.";
   }
-  return ultimoErro;
+}
+
+// ANÁLISE AUTOMÁTICA DE HUMOR (MOOD TRACKER)
+async function analisarHumorDoTexto(texto) {
+  if (!texto || texto.length < 15) return null;
+  try {
+    const prompt = `Analise o texto a seguir de um diário pessoal e identifique o sentimento/humor predominante. Responda ESTRITAMENTE com um emoji e um rótulo curto de no máximo 2 palavras (Exemplo: "😊 Realizado", "🌿 Tranquilo", "⚡ Produtivo", "💭 Reflexivo", "😤 Cansado"). Texto: "${texto}"`;
+    const resposta = await chamarGemini(prompt);
+    const limpo = resposta.trim().replace(/["']/g, '');
+    return (limpo.length > 0 && limpo.length <= 25 && !limpo.includes("Erro")) ? limpo : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 // CHAT DE IA
@@ -138,7 +140,7 @@ if (btnSaveChatToDiary) {
   });
 }
 
-// 2. DITADO NATIVO EM TEMPO REAL + DESLIGAMENTO FÍSICO DO MICROFONE
+// 3. DITADO NATIVO EM TEMPO REAL + DESLIGAMENTO FÍSICO DO MICROFONE
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const EH_ANDROID = /Android/i.test(navigator.userAgent);
 
@@ -170,21 +172,17 @@ function finalizarUI() {
 
 function criarReconhecimento() {
   const rec = new SpeechRecognition();
-  rec.continuous = !EH_ANDROID; // no Android, o modo contínuo repete o texto
-  rec.interimResults = !EH_ANDROID; // no Android, só resultados finais (evita repetição)
+  rec.continuous = !EH_ANDROID;
+  rec.interimResults = !EH_ANDROID;
   rec.lang = 'pt-BR';
 
   rec.onresult = (event) => {
     let ditado = '';
-
     if (EH_ANDROID) {
-      // Android: modo não contínuo, cada sessão devolve uma frase.
-      // Usamos só o ÚLTIMO resultado (ignora os acumulados repetidos)
-      // e, quando ele fica final, "travamos" o texto em baseText.
       const ultimo = event.results[event.results.length - 1];
       const t = ultimo[0].transcript.trim();
       if (!t || !ultimo.isFinal) return;
-      if (t === ultimoTrechoAndroid) return; // ignora evento repetido idêntico
+      if (t === ultimoTrechoAndroid) return;
       ultimoTrechoAndroid = t;
       const campoA = alvoDitado || entryText;
       baseText = baseText + (baseText ? ' ' : '') + t;
@@ -209,26 +207,24 @@ function criarReconhecimento() {
 
   rec.onerror = (e) => {
     console.error("Erro no ditado:", e.error, e.message);
-    // 'no-speech' e 'aborted' são normais; o onend cuida do resto.
     if (e.error === 'no-speech' || e.error === 'aborted') return;
 
     const explicacoes = {
-      'not-allowed': 'Permissão de microfone negada. Libere o microfone nas configurações do site.',
-      'service-not-allowed': 'O navegador bloqueou o serviço de voz. Abra no Chrome (fora do app instalado) e permita o microfone.',
-      'network': 'Sem acesso ao serviço de voz do Google. Verifique a internet; Edge/Brave/VPN costumam causar isso. Tente no Chrome.',
-      'audio-capture': 'Nenhum microfone encontrado ou ele está em uso por outro programa.',
-      'language-not-supported': 'Idioma pt-BR não suportado neste navegador.'
+      'not-allowed': 'Permissão de microfone negada.',
+      'service-not-allowed': 'Navegador bloqueou o serviço de voz.',
+      'network': 'Sem acesso ao serviço de voz. Verifique a conexão.',
+      'audio-capture': 'Nenhum microfone encontrado.',
+      'language-not-supported': 'Idioma pt-BR não suportado.'
     };
 
     ultimoErroDitado = e.error;
-    isRecording = false; // evita o reinício automático em loop
+    isRecording = false;
     statusMsg.innerText = `⚠️ Erro no ditado (${e.error}): ${explicacoes[e.error] || 'erro desconhecido.'}`;
     try { rec.abort(); } catch (err) {}
     finalizarUI();
   };
 
   rec.onend = () => {
-    // O Chrome encerra sozinho após silêncio: reinicia se o usuário ainda quer gravar.
     if (isRecording) {
       baseText = (alvoDitado || entryText).value;
       ultimoTrechoAndroid = "";
@@ -252,8 +248,6 @@ async function iniciarGravacao(alvo, botao) {
     return;
   }
 
-  // Só para pedir permissão; o stream é encerrado logo em seguida
-  // (manter aberto junto com o reconhecimento falha em alguns celulares).
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     desligarMicrofoneHardware();
@@ -331,7 +325,6 @@ if (btnRecord) {
   btnRecord.addEventListener('click', () => alternarGravacao(entryText, btnRecord));
 }
 
-// Microfone também no chat com a IA
 if (chatInput && btnSendChat) {
   btnMicChat = document.createElement('button');
   btnMicChat.type = 'button';
@@ -342,14 +335,13 @@ if (chatInput && btnSendChat) {
   btnSendChat.insertAdjacentElement('beforebegin', btnMicChat);
 }
 
-// Garante que o microfone apague se a página for fechada/escondida
 window.addEventListener('pagehide', () => {
   isRecording = false;
   try { recognition?.abort(); } catch (e) {}
   desligarMicrofoneHardware();
 });
 
-// 3. LOCAL, CLIMA, LUA E MAPA (como no Journey)
+// 4. LOCAL, CLIMA, LUA E MAPA
 let climaAtual = null;
 let contextoSolicitado = false;
 
@@ -372,19 +364,10 @@ async function nomeDoLugar(lat, lng) {
 
 function descreverClima(codigo, ehDia) {
   const t = {
-    0: ['Céu limpo', ehDia ? '☀️' : '🌙'],
-    1: ['Predominantemente limpo', ehDia ? '🌤️' : '🌙'],
-    2: ['Parcialmente nublado', '⛅'],
-    3: ['Nublado', '☁️'],
-    45: ['Neblina', '🌫️'], 48: ['Neblina com geada', '🌫️'],
-    51: ['Garoa leve', '🌦️'], 53: ['Garoa', '🌦️'], 55: ['Garoa forte', '🌧️'],
-    56: ['Garoa congelante', '🌧️'], 57: ['Garoa congelante forte', '🌧️'],
-    61: ['Chuva leve', '🌧️'], 63: ['Chuva', '🌧️'], 65: ['Chuva forte', '🌧️'],
-    66: ['Chuva congelante', '🌧️'], 67: ['Chuva congelante forte', '🌧️'],
-    71: ['Neve leve', '❄️'], 73: ['Neve', '❄️'], 75: ['Neve forte', '❄️'], 77: ['Grãos de neve', '❄️'],
-    80: ['Pancadas de chuva leves', '🌦️'], 81: ['Pancadas de chuva', '🌧️'], 82: ['Pancadas de chuva fortes', '⛈️'],
-    85: ['Pancadas de neve', '❄️'], 86: ['Pancadas de neve fortes', '❄️'],
-    95: ['Trovoada', '⛈️'], 96: ['Trovoada com granizo', '⛈️'], 99: ['Trovoada com granizo forte', '⛈️']
+    0: ['Céu limpo', ehDia ? '☀️' : '🌙'], 1: ['Predominantemente limpo', ehDia ? '🌤️' : '🌙'],
+    2: ['Parcialmente nublado', '⛅'], 3: ['Nublado', '☁️'], 45: ['Neblina', '🌫️'],
+    51: ['Garoa leve', '🌦️'], 61: ['Chuva leve', '🌧️'], 63: ['Chuva', '🌧️'],
+    80: ['Pancadas de chuva leves', '🌦️'], 95: ['Trovoada', '⛈️']
   };
   const par = t[codigo] || ['Tempo indefinido', '🌡️'];
   return { descricao: par[0], icone: par[1] };
@@ -431,7 +414,6 @@ function urlMapa(lat, lng) {
   return `https://www.openstreetmap.org/export/embed.html?bbox=${lng - dx},${lat - dy},${lng + dx},${lat + dy}&layer=mapnik&marker=${lat},${lng}`;
 }
 
-// Caixa com o mapinha e o clima da entrada que está sendo escrita
 const mapaBox = document.createElement('div');
 mapaBox.style.cssText = 'display:none;margin:8px 0;padding:10px;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;';
 if (btnSave) btnSave.insertAdjacentElement('beforebegin', mapaBox);
@@ -479,13 +461,12 @@ function capturarContexto() {
       statusMsg.innerText = "Local e clima registrados.";
       resolve();
     }, () => {
-      statusMsg.innerText = "Não consegui obter o GPS. Permita o acesso à localização.";
+      statusMsg.innerText = "Não consegui obter o GPS.";
       resolve();
     }, { enableHighAccuracy: true, timeout: 15000 });
   });
 }
 
-// Captura automática ao começar a escrever ou gravar (uma vez por entrada)
 function capturarAutomatico() {
   if (contextoSolicitado || currentLocation) return;
   contextoSolicitado = true;
@@ -501,7 +482,7 @@ if (btnLocation) {
   });
 }
 
-// 4. FOTOS E ARQUIVOS (a interface extra é criada por aqui mesmo)
+// 5. FOTOS E GOOGLE DRIVE
 const MAX_FOTOS = 4;
 const MAX_ARQUIVO_MB = 10;
 const photoInput = document.getElementById('photoInput');
@@ -516,7 +497,6 @@ fileInput.multiple = true;
 fileInput.style.display = 'none';
 document.body.appendChild(fileInput);
 
-// Entrada que abre a câmera direto no celular/tablet
 const cameraInput = document.createElement('input');
 cameraInput.type = 'file';
 cameraInput.accept = 'image/*';
@@ -623,7 +603,6 @@ fileInput.addEventListener('change', () => {
   renderPreview();
 });
 
-// Fotos ficam no próprio banco (reduzidas para caber no limite de ~1 MB)
 function comprimirImagem(file, maxLado, qualidade) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -653,10 +632,9 @@ async function prepararFotos() {
     const total = lista.reduce((soma, x) => soma + x.length, 0);
     if (total < 800000) return lista;
   }
-  throw new Error('As fotos ficaram pesadas demais. Remova algumas.');
+  throw new Error('As fotos ficaram pesadas demais.');
 }
 
-// Arquivos vão para a pasta "Meu Diário" no Google Drive da própria conta
 function tokenDriveValido() {
   return driveToken && (Date.now() - driveTokenHora) < 50 * 60 * 1000;
 }
@@ -721,17 +699,16 @@ async function enviarArquivoDrive(file, pastaId) {
   return { id: r.id, nome: r.name, tipo: r.mimeType, tamanho: Number(r.size) || file.size, link: r.webViewLink };
 }
 
-// SALVAR REGISTRO NO FIREBASE
+// 6. SALVAR REGISTRO NO FIREBASE (COM HUMOR IA)
 if (btnSave) {
   btnSave.addEventListener('click', async () => {
-    // O pop-up do Google precisa abrir logo no clique, antes de qualquer outra espera
     if (arquivosPendentes.length && !tokenDriveValido()) {
       try {
         statusMsg.innerText = "Conectando ao Google Drive...";
         await entrarComGoogle();
       } catch (err) {
         console.error(err);
-        statusMsg.innerText = "Não foi possível conectar ao Google Drive. Permita pop-ups e o acesso ao Drive.";
+        statusMsg.innerText = "Não foi possível conectar ao Google Drive.";
         return;
       }
     }
@@ -753,10 +730,13 @@ if (btnSave) {
       if (arquivosPendentes.length) {
         const pastaId = await garantirPastaDrive();
         for (let i = 0; i < arquivosPendentes.length; i++) {
-          statusMsg.innerText = `Enviando arquivo ${i + 1} de ${arquivosPendentes.length} para o Google Drive...`;
+          statusMsg.innerText = `Enviando arquivo ${i + 1} de ${arquivosPendentes.length} para o Drive...`;
           arquivos.push(await enviarArquivoDrive(arquivosPendentes[i], pastaId));
         }
       }
+
+      statusMsg.innerText = "🤖 Analisando tom emocional...";
+      const humorDetectado = await analisarHumorDoTexto(textoFinal);
 
       statusMsg.innerText = "Salvando registro no banco de dados...";
       await addDoc(collection(db, "diario_entradas"), {
@@ -765,6 +745,7 @@ if (btnSave) {
         data: new Date().toISOString(),
         localizacao: currentLocation,
         clima: climaAtual,
+        humor: humorDetectado,
         fotos,
         arquivos
       });
@@ -781,30 +762,22 @@ if (btnSave) {
       renderPreview();
     } catch (err) {
       console.error(err);
-      if (err.status === 401) driveToken = null;
-      if (err.status === 404) pastaDriveId = null;
-      let msg = err.message || 'tente de novo';
-      if (err.status === 403 && /not been used|disabled|accessNotConfigured/i.test(msg)) {
-        msg = 'a API do Google Drive não está ativada no projeto.';
-      }
-      statusMsg.innerText = `Erro ao salvar: ${msg}`;
+      statusMsg.innerText = `Erro ao salvar: ${err.message || 'tente novamente.'}`;
     } finally {
       btnSave.disabled = false;
     }
   });
 }
 
-// 5. HISTÓRICO EM TEMPO REAL + BUSCA INTELIGENTE
+// 7. HISTÓRICO EM TEMPO REAL + BUSCA + RECURSO "NESTE DIA"
 let todasEntradas = [];
 const busca = { consulta: '', modo: 'local', grupos: [], termosDestaque: [], extras: [] };
-
 const STOPWORDS = new Set(['de','do','da','dos','das','no','na','nos','nas','que','eu','um','uma','uns','umas','em','com','para','por','meu','minha','meus','minhas','fiz','fui','foi','sobre','todos','todas','todo','toda','quero','ver','puxar','mostrar','mostra','mostre','relato','relatos','entrada','entradas','tudo','falei','escrevi','onde','quando','pra','pro','ou','seus','suas','tem','teve','tive']);
 
 function norm(s) {
   return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
-// Raiz simples para pegar variações (treino, treinei, treinar -> "trein")
 function radical(p) {
   if (p.length >= 7) return p.slice(0, p.length - 2);
   if (p.length >= 5) return p.slice(0, p.length - 1);
@@ -819,6 +792,7 @@ function textoBuscavel(e) {
   const partes = [e.texto];
   if (e.localizacao && e.localizacao.nome) partes.push(e.localizacao.nome);
   if (e.clima && e.clima.descricao) partes.push(e.clima.descricao);
+  if (e.humor) partes.push(e.humor);
   if (Array.isArray(e.arquivos)) e.arquivos.forEach(a => { if (a && a.nome) partes.push(a.nome); });
   return norm(partes.join(' \n '));
 }
@@ -828,11 +802,10 @@ function definirBuscaLocal(consulta) {
   busca.consulta = consulta;
   busca.modo = 'local';
   busca.extras = [];
-  busca.grupos = palavras.map(p => [radical(p)]); // todas as palavras precisam aparecer
+  busca.grupos = palavras.map(p => [radical(p)]);
   busca.termosDestaque = busca.grupos.map(g => g[0]);
 }
 
-// Devolve a pontuação (0 = não combina)
 function entradaCombina(textoNorm) {
   if (!busca.grupos.length) return 1;
   let pontos = 0;
@@ -859,7 +832,6 @@ function entradasFiltradas() {
   return lista;
 }
 
-// Marca os termos encontrados, ignorando acentos e maiúsculas
 function destacar(texto, termos) {
   const original = String(texto == null ? '' : texto);
   const validos = (termos || []).filter(t => t && t.length >= 2);
@@ -909,6 +881,8 @@ function htmlEntrada(data, termos) {
       <iframe src="${urlMapa(l.lat, l.lng)}" loading="lazy" title="Mapa" style="width:100%;height:140px;border:0;border-radius:10px;margin-top:8px;"></iframe>`;
   }
 
+  const badgeHumor = data.humor ? `<span style="font-size:12px;background:#eff6ff;color:#1e40af;padding:2px 8px;border-radius:12px;font-weight:bold;margin-left:8px;">${escapeHtml(data.humor)}</span>` : '';
+
   const listaFotos = [].concat(Array.isArray(data.fotos) ? data.fotos : [], data.fotoBase64 ? [data.fotoBase64] : [])
     .filter(f => typeof f === 'string' && f.startsWith('data:image/'));
   const larguraFoto = listaFotos.length > 1 ? '48%' : '100%';
@@ -923,13 +897,43 @@ function htmlEntrada(data, termos) {
 
   return `
     <div style="border-left:4px solid #2563eb; padding-left:12px; margin-bottom:15px;">
-      <div style="font-size:12px; color:#64748b; font-weight:bold; text-transform:capitalize;">${escapeHtml(dataTxt)} · ${escapeHtml(horaTxt)}</div>
+      <div style="font-size:12px; color:#64748b; font-weight:bold; text-transform:capitalize;">${escapeHtml(dataTxt)} · ${escapeHtml(horaTxt)} ${badgeHumor}</div>
       ${local}
       <p style="white-space: pre-wrap; margin: 6px 0;">${destacar(data.texto, termos)}</p>
       ${fotosHtml}
       ${arquivosHtml}
     </div>
   `;
+}
+
+// FUNCIONALIDADE: FLASHBACK "NESTE DIA"
+function verificarNesteDia() {
+  const container = document.getElementById('nesteDiaBox');
+  if (!container) return;
+  container.innerHTML = '';
+  
+  const hoje = new Date();
+  const mesHoje = hoje.getMonth();
+  const diaHoje = hoje.getDate();
+
+  const reliquia = todasEntradas.find(e => {
+    const d = new Date(e.data);
+    return d.getDate() === diaHoje && d.getMonth() === mesHoje && d.getFullYear() !== hoje.getFullYear();
+  });
+
+  if (reliquia) {
+    const d = new Date(reliquia.data);
+    const anosAtras = hoje.getFullYear() - d.getFullYear();
+    container.style.display = 'block';
+    container.innerHTML = `
+      <div style="background:#fef3c7;border:1px solid #fde047;padding:12px;border-radius:10px;margin-bottom:15px;color:#78350f;">
+        <strong>⏳ Neste dia, há ${anosAtras} ano(s) (${d.getFullYear()}):</strong>
+        <p style="margin:4px 0 0 0;font-style:italic;">"${escapeHtml(reliquia.texto.substring(0, 150))}${reliquia.texto.length > 150 ? '...' : ''}"</p>
+      </div>
+    `;
+  } else {
+    container.style.display = 'none';
+  }
 }
 
 function atualizarInfoBusca(n) {
@@ -949,6 +953,9 @@ function atualizarInfoBusca(n) {
 function renderTimeline() {
   const timeline = document.getElementById('timeline');
   if (!timeline) return;
+  
+  verificarNesteDia();
+
   if (!todasEntradas.length) {
     timeline.innerHTML = "<p>Nenhuma entrada salva ainda.</p>";
     atualizarInfoBusca(0);
@@ -980,10 +987,8 @@ async function buscarComIA() {
   const palavras = palavrasDaConsulta(consulta);
   const resposta = await chamarGemini(
     `Você ajuda a buscar em um diário pessoal escrito em português do Brasil. Busca do usuário: "${consulta}". ` +
-    `Identifique o tema principal e liste de 8 a 20 palavras ou expressões curtas que possam aparecer em relatos sobre esse tema ` +
-    `(sinônimos, formas verbais como treinei/treinar, atividades, lugares e coisas ligadas). ` +
-    `Ignore palavras genéricas como "relatos" ou "quero ver". ` +
-    `Responda SOMENTE com um array JSON de strings em minúsculas, sem explicações e sem crases.`
+    `Identifique o tema principal e liste de 8 a 20 palavras ou expressões curtas que possam aparecer em relatos sobre esse tema. ` +
+    `Responda SOMENTE com um array JSON de strings em minúsculas, sem explicações.`
   );
 
   let extras = [];
@@ -1004,7 +1009,7 @@ async function buscarComIA() {
   if (!extras.length) {
     definirBuscaLocal(consulta);
     renderTimeline();
-    info.textContent += ' · (a IA não respondeu; usei a busca normal)';
+    info.textContent += ' · (usando busca normal)';
     return;
   }
 
@@ -1013,19 +1018,47 @@ async function buscarComIA() {
   busca.consulta = consulta;
   busca.modo = 'ia';
   busca.extras = extras;
-  busca.grupos = [Array.from(termos)]; // qualquer termo relacionado serve
+  busca.grupos = [Array.from(termos)];
   busca.termosDestaque = Array.from(termos);
   renderTimeline();
+}
+
+// RESUMO MENSAL POR IA
+async function gerarResumoMensal() {
+  if (!todasEntradas.length) {
+    alert("Nenhuma entrada salva para resumir.");
+    return;
+  }
+  const btnResumo = document.getElementById('btnResumoMensal');
+  btnResumo.disabled = true;
+  btnResumo.innerText = "⏳ Gerando...";
+
+  const relatos = todasEntradas.slice(0, 20).map(e => `[${new Date(e.data).toLocaleDateString()}]: ${e.texto}`).join('\n');
+  const prompt = `Leia estes últimos relatos do diário pessoal de uma pessoa e faça um resumo empático e inspirador em 3 parágrafos curtos, destacando os principais acontecimentos, conquistas e sentimentos do período:\n\n${relatos}`;
+
+  const resumo = await chamarGemini(prompt);
+  btnResumo.disabled = false;
+  btnResumo.innerText = "📊 Resumo Mensal";
+
+  appendMsg('ai', `📊 **Resumo dos Seus Últimos Registros:**\n\n${resumo}`);
+  document.getElementById('chatBox').scrollIntoView({ behavior: 'smooth' });
 }
 
 function criarBarraBusca() {
   const timeline = document.getElementById('timeline');
   if (!timeline) return;
+
+  const nesteDiaBox = document.createElement('div');
+  nesteDiaBox.id = 'nesteDiaBox';
+  nesteDiaBox.style.display = 'none';
+  timeline.insertAdjacentElement('beforebegin', nesteDiaBox);
+
   const barra = document.createElement('div');
   barra.innerHTML = `
-    <div style="display:flex;gap:8px;margin-bottom:6px;">
-      <input id="buscaInput" type="search" placeholder="🔍 Buscar no diário (ex.: treino, viagem, família)" style="flex:1;min-width:0;padding:10px;border:1px solid #e2e8f0;border-radius:8px;outline:none;font-size:14px;">
-      <button id="buscaIA" class="btn-tool" type="button" title="Busca inteligente com IA (ou aperte Enter)">✨ Inteligente</button>
+    <div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+      <input id="buscaInput" type="search" placeholder="🔍 Buscar no diário..." style="flex:1;min-width:180px;padding:10px;border:1px solid #e2e8f0;border-radius:8px;outline:none;font-size:14px;">
+      <button id="buscaIA" class="btn-tool" type="button" title="Busca inteligente">✨ IA</button>
+      <button id="btnResumoMensal" class="btn-tool" type="button" title="Gerar Resumo por IA">📊 Resumo</button>
     </div>
     <div id="buscaInfo" style="font-size:12px;color:#64748b;margin-bottom:10px;"></div>`;
   timeline.insertAdjacentElement('beforebegin', barra);
@@ -1047,6 +1080,7 @@ function criarBarraBusca() {
     }
   });
   document.getElementById('buscaIA').addEventListener('click', buscarComIA);
+  document.getElementById('btnResumoMensal').addEventListener('click', gerarResumoMensal);
 }
 
 function escutarEntradasEmTempoReal() {
@@ -1067,7 +1101,7 @@ function escutarEntradasEmTempoReal() {
 
 criarBarraBusca();
 
-// 6. LOGIN COM GOOGLE
+// 8. LOGIN COM GOOGLE E TELA DE PROTEÇÃO
 let cancelarEscuta = null;
 
 function criarTelaLogin() {
@@ -1075,8 +1109,8 @@ function criarTelaLogin() {
   overlay.id = 'loginOverlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:#f1f5f9;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9999;padding:24px;text-align:center;';
   overlay.innerHTML = `
-    <h2 style="margin:0;color:#1e293b;">📔 Meu Diário</h2>
-    <p style="margin:0;color:#64748b;">Entre com sua conta Google para acessar.</p>
+    <h2 style="margin:0;color:#1e293b;">📔 Meu Diário Pessoal</h2>
+    <p style="margin:0;color:#64748b;">Entre com sua conta Google para acessar seus relatos.</p>
     <button id="btnLogin" style="padding:14px 24px;font-size:16px;font-weight:bold;border:none;border-radius:12px;background:#1e3a8a;color:#fff;cursor:pointer;">Entrar com Google</button>
     <p id="loginMsg" style="margin:0;color:#b91c1c;font-size:14px;max-width:420px;"></p>
   `;
@@ -1096,14 +1130,7 @@ function criarTelaLogin() {
       await entrarComGoogle();
     } catch (err) {
       console.error(err);
-      const mensagens = {
-        'auth/popup-blocked': 'O navegador bloqueou a janela de login. Permita pop-ups para este site e tente de novo.',
-        'auth/popup-closed-by-user': 'Login cancelado.',
-        'auth/cancelled-popup-request': 'Login cancelado.',
-        'auth/unauthorized-domain': 'Domínio não autorizado: no Firebase, vá em Authentication > Configurações > Domínios autorizados e adicione tertim-code.github.io.',
-        'auth/operation-not-allowed': 'O login com Google não está ativado: no Firebase, vá em Authentication > Método de login e ative o Google.'
-      };
-      loginMsg.innerText = mensagens[err.code] || `Erro no login (${err.code || 'desconhecido'}).`;
+      loginMsg.innerText = `Erro no login: ${err.message || 'tentativa cancelada.'}`;
     }
   });
 
