@@ -15,6 +15,7 @@ const firebaseConfig = {
 const GEMINI_API_KEY = "AQ.Ab8RN6K6jZY78LvOKQiH9wdrB7qRGZWP3W6mvUZhzBnVwzKsAA";
 // gemini-1.5-flash foi descontinuado; troque aqui se quiser outro modelo.
 const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODELOS = [GEMINI_MODEL, "gemini-flash-latest"]; // tenta o próximo se um modelo não existir
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
@@ -41,7 +42,7 @@ let pastaDriveId = null;
 let fotosPendentes = [];
 let arquivosPendentes = [];
 
-const APP_VERSION = "v9-voz-no-chat";
+const APP_VERSION = "v10-busca";
 console.log("app.js", APP_VERSION);
 
 const btnRecord = document.getElementById('btnRecord');
@@ -62,25 +63,34 @@ function escapeHtml(str) {
 
 // 1. CONVERSA COM A IA (GEMINI API)
 async function chamarGemini(prompt) {
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+  let ultimoErro = "Erro ao comunicar com a IA.";
+  for (const modelo of GEMINI_MODELOS) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || data.error) {
+        console.error("Erro Gemini:", modelo, data.error || response.status);
+        ultimoErro = `Erro da IA (${modelo}): ${(data.error && data.error.message) || response.status}`;
+        if (response.status === 404) continue; // modelo indisponível: tenta o próximo
+        return ultimoErro;
       }
-    );
-    const data = await response.json();
-    if (!response.ok || data.error) {
-      console.error("Erro Gemini:", data.error || response.status);
-      return `Erro da IA: ${data.error?.message || response.status}`;
+      const texto = data.candidates && data.candidates[0] && data.candidates[0].content
+        && data.candidates[0].content.parts && data.candidates[0].content.parts[0]
+        && data.candidates[0].content.parts[0].text;
+      return texto || "A IA não retornou resposta.";
+    } catch (err) {
+      console.error(err);
+      return "Erro ao comunicar com a IA.";
     }
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "A IA não retornou resposta.";
-  } catch (err) {
-    console.error(err);
-    return "Erro ao comunicar com a IA.";
   }
+  return ultimoErro;
 }
 
 // CHAT DE IA
@@ -783,7 +793,261 @@ if (btnSave) {
   });
 }
 
-// 5. HISTÓRICO EM TEMPO REAL
+// 5. HISTÓRICO EM TEMPO REAL + BUSCA INTELIGENTE
+let todasEntradas = [];
+const busca = { consulta: '', modo: 'local', grupos: [], termosDestaque: [], extras: [] };
+
+const STOPWORDS = new Set(['de','do','da','dos','das','no','na','nos','nas','que','eu','um','uma','uns','umas','em','com','para','por','meu','minha','meus','minhas','fiz','fui','foi','sobre','todos','todas','todo','toda','quero','ver','puxar','mostrar','mostra','mostre','relato','relatos','entrada','entradas','tudo','falei','escrevi','onde','quando','pra','pro','ou','seus','suas','tem','teve','tive']);
+
+function norm(s) {
+  return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+// Raiz simples para pegar variações (treino, treinei, treinar -> "trein")
+function radical(p) {
+  if (p.length >= 7) return p.slice(0, p.length - 2);
+  if (p.length >= 5) return p.slice(0, p.length - 1);
+  return p;
+}
+
+function palavrasDaConsulta(texto) {
+  return norm(texto).split(/[^a-z0-9]+/).filter(p => p.length >= 3 && !STOPWORDS.has(p));
+}
+
+function textoBuscavel(e) {
+  const partes = [e.texto];
+  if (e.localizacao && e.localizacao.nome) partes.push(e.localizacao.nome);
+  if (e.clima && e.clima.descricao) partes.push(e.clima.descricao);
+  if (Array.isArray(e.arquivos)) e.arquivos.forEach(a => { if (a && a.nome) partes.push(a.nome); });
+  return norm(partes.join(' \n '));
+}
+
+function definirBuscaLocal(consulta) {
+  const palavras = palavrasDaConsulta(consulta);
+  busca.consulta = consulta;
+  busca.modo = 'local';
+  busca.extras = [];
+  busca.grupos = palavras.map(p => [radical(p)]); // todas as palavras precisam aparecer
+  busca.termosDestaque = busca.grupos.map(g => g[0]);
+}
+
+// Devolve a pontuação (0 = não combina)
+function entradaCombina(textoNorm) {
+  if (!busca.grupos.length) return 1;
+  let pontos = 0;
+  for (const grupo of busca.grupos) {
+    const achados = grupo.filter(t => textoNorm.includes(t));
+    if (!achados.length) {
+      if (busca.modo === 'local') return 0;
+      continue;
+    }
+    pontos += achados.length;
+  }
+  return pontos;
+}
+
+function entradasFiltradas() {
+  const lista = [];
+  for (const e of todasEntradas) {
+    const pontos = entradaCombina(textoBuscavel(e));
+    if (pontos > 0) lista.push({ e, pontos });
+  }
+  if (busca.modo === 'ia') {
+    lista.sort((a, b) => b.pontos - a.pontos || String(b.e.data).localeCompare(String(a.e.data)));
+  }
+  return lista;
+}
+
+// Marca os termos encontrados, ignorando acentos e maiúsculas
+function destacar(texto, termos) {
+  const original = String(texto == null ? '' : texto);
+  const validos = (termos || []).filter(t => t && t.length >= 2);
+  if (!validos.length) return escapeHtml(original);
+  const chars = Array.from(original);
+  let normTxt = '';
+  const mapa = [];
+  chars.forEach((ch, i) => {
+    const n = ch.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    for (let k = 0; k < n.length; k++) mapa.push(i);
+    normTxt += n;
+  });
+  const marcado = new Array(chars.length).fill(false);
+  validos.forEach((t) => {
+    let pos = normTxt.indexOf(t);
+    while (pos !== -1) {
+      for (let k = pos; k < pos + t.length; k++) marcado[mapa[k]] = true;
+      pos = normTxt.indexOf(t, pos + 1);
+    }
+  });
+  let html = '';
+  let i = 0;
+  while (i < chars.length) {
+    let j = i;
+    while (j < chars.length && marcado[j] === marcado[i]) j++;
+    const trecho = escapeHtml(chars.slice(i, j).join(''));
+    html += marcado[i] ? `<mark style="background:#fde68a;border-radius:3px;padding:0 1px;">${trecho}</mark>` : trecho;
+    i = j;
+  }
+  return html;
+}
+
+function htmlEntrada(data, termos) {
+  const quando = new Date(data.data);
+  const dataTxt = quando.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  const horaTxt = quando.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+  let local = '';
+  if (data.localizacao && typeof data.localizacao.lat === 'number') {
+    const l = data.localizacao;
+    const rotulo = l.nome || `${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}`;
+    const lua = faseDaLua(quando);
+    const c = data.clima;
+    const climaTxt = c && typeof c.temp === 'number' ? ` · ${escapeHtml(c.icone)} ${c.temp}°C, ${escapeHtml(c.descricao)}` : '';
+    local = `
+      <div style="font-size:13px;color:#475569;margin-top:2px;">📍 <a href="https://www.google.com/maps?q=${l.lat},${l.lng}" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;">${escapeHtml(rotulo)}</a>${climaTxt} · ${lua.icone} ${escapeHtml(lua.nome)}</div>
+      <iframe src="${urlMapa(l.lat, l.lng)}" loading="lazy" title="Mapa" style="width:100%;height:140px;border:0;border-radius:10px;margin-top:8px;"></iframe>`;
+  }
+
+  const listaFotos = [].concat(Array.isArray(data.fotos) ? data.fotos : [], data.fotoBase64 ? [data.fotoBase64] : [])
+    .filter(f => typeof f === 'string' && f.startsWith('data:image/'));
+  const larguraFoto = listaFotos.length > 1 ? '48%' : '100%';
+  const fotosHtml = listaFotos.length
+    ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">${listaFotos.map(f => `<img src="${f}" style="max-width:${larguraFoto};border-radius:8px;">`).join('')}</div>`
+    : '';
+
+  const arquivosHtml = (Array.isArray(data.arquivos) ? data.arquivos : [])
+    .filter(a => a && typeof a.link === 'string' && /^https:\/\/(drive|docs)\.google\.com\//.test(a.link))
+    .map(a => `<a href="${escapeHtml(a.link)}" target="_blank" rel="noopener" style="display:inline-block;margin:6px 6px 0 0;padding:6px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;color:#1e3a8a;text-decoration:none;background:#f8fafc;">📎 ${escapeHtml(a.nome)}</a>`)
+    .join('');
+
+  return `
+    <div style="border-left:4px solid #2563eb; padding-left:12px; margin-bottom:15px;">
+      <div style="font-size:12px; color:#64748b; font-weight:bold; text-transform:capitalize;">${escapeHtml(dataTxt)} · ${escapeHtml(horaTxt)}</div>
+      ${local}
+      <p style="white-space: pre-wrap; margin: 6px 0;">${destacar(data.texto, termos)}</p>
+      ${fotosHtml}
+      ${arquivosHtml}
+    </div>
+  `;
+}
+
+function atualizarInfoBusca(n) {
+  const info = document.getElementById('buscaInfo');
+  if (!info) return;
+  if (!busca.consulta.trim()) {
+    info.textContent = '';
+    return;
+  }
+  let txt = `${n} de ${todasEntradas.length} entradas`;
+  if (busca.modo === 'ia' && busca.extras.length) {
+    txt += ` · ✨ termos relacionados: ${busca.extras.slice(0, 12).join(', ')}`;
+  }
+  info.textContent = txt;
+}
+
+function renderTimeline() {
+  const timeline = document.getElementById('timeline');
+  if (!timeline) return;
+  if (!todasEntradas.length) {
+    timeline.innerHTML = "<p>Nenhuma entrada salva ainda.</p>";
+    atualizarInfoBusca(0);
+    return;
+  }
+  const lista = entradasFiltradas();
+  atualizarInfoBusca(lista.length);
+  if (!lista.length) {
+    timeline.innerHTML = "<p>Nenhuma entrada encontrada para essa busca.</p>";
+    return;
+  }
+  timeline.innerHTML = lista.map(item => htmlEntrada(item.e, busca.termosDestaque)).join('');
+}
+
+async function buscarComIA() {
+  const input = document.getElementById('buscaInput');
+  const botao = document.getElementById('buscaIA');
+  const info = document.getElementById('buscaInfo');
+  if (!input) return;
+  const consulta = input.value.trim();
+  if (!consulta) {
+    definirBuscaLocal('');
+    renderTimeline();
+    return;
+  }
+  botao.disabled = true;
+  info.textContent = '✨ Pensando em termos relacionados...';
+
+  const palavras = palavrasDaConsulta(consulta);
+  const resposta = await chamarGemini(
+    `Você ajuda a buscar em um diário pessoal escrito em português do Brasil. Busca do usuário: "${consulta}". ` +
+    `Identifique o tema principal e liste de 8 a 20 palavras ou expressões curtas que possam aparecer em relatos sobre esse tema ` +
+    `(sinônimos, formas verbais como treinei/treinar, atividades, lugares e coisas ligadas). ` +
+    `Ignore palavras genéricas como "relatos" ou "quero ver". ` +
+    `Responda SOMENTE com um array JSON de strings em minúsculas, sem explicações e sem crases.`
+  );
+
+  let extras = [];
+  try {
+    const m = String(resposta).match(/\[[\s\S]*\]/);
+    if (m) {
+      extras = JSON.parse(m[0])
+        .filter(x => typeof x === 'string')
+        .map(x => norm(x).trim())
+        .filter(x => x.length >= 3)
+        .slice(0, 25);
+    }
+  } catch (err) {
+    console.error(err);
+  }
+  botao.disabled = false;
+
+  if (!extras.length) {
+    definirBuscaLocal(consulta);
+    renderTimeline();
+    info.textContent += ' · (a IA não respondeu; usei a busca normal)';
+    return;
+  }
+
+  const termos = new Set(palavras.map(radical));
+  extras.forEach(x => termos.add(x.includes(' ') ? x : radical(x)));
+  busca.consulta = consulta;
+  busca.modo = 'ia';
+  busca.extras = extras;
+  busca.grupos = [Array.from(termos)]; // qualquer termo relacionado serve
+  busca.termosDestaque = Array.from(termos);
+  renderTimeline();
+}
+
+function criarBarraBusca() {
+  const timeline = document.getElementById('timeline');
+  if (!timeline) return;
+  const barra = document.createElement('div');
+  barra.innerHTML = `
+    <div style="display:flex;gap:8px;margin-bottom:6px;">
+      <input id="buscaInput" type="search" placeholder="🔍 Buscar no diário (ex.: treino, viagem, família)" style="flex:1;min-width:0;padding:10px;border:1px solid #e2e8f0;border-radius:8px;outline:none;font-size:14px;">
+      <button id="buscaIA" class="btn-tool" type="button" title="Busca inteligente com IA (ou aperte Enter)">✨ Inteligente</button>
+    </div>
+    <div id="buscaInfo" style="font-size:12px;color:#64748b;margin-bottom:10px;"></div>`;
+  timeline.insertAdjacentElement('beforebegin', barra);
+
+  const input = document.getElementById('buscaInput');
+  let timer = null;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      definirBuscaLocal(input.value);
+      renderTimeline();
+    }, 250);
+  });
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      clearTimeout(timer);
+      buscarComIA();
+    }
+  });
+  document.getElementById('buscaIA').addEventListener('click', buscarComIA);
+}
+
 function escutarEntradasEmTempoReal() {
   const timeline = document.getElementById('timeline');
   if (!timeline) return;
@@ -791,58 +1055,16 @@ function escutarEntradasEmTempoReal() {
   const q = query(collection(db, "diario_entradas"), orderBy("data", "desc"));
 
   return onSnapshot(q, (querySnapshot) => {
-    if (querySnapshot.empty) {
-      timeline.innerHTML = "<p>Nenhuma entrada salva ainda.</p>";
-      return;
-    }
-
-    let html = "";
-    querySnapshot.forEach((docSnap) => {
-      const data = docSnap.data();
-      const quando = new Date(data.data);
-      const dataTxt = quando.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
-      const horaTxt = quando.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-
-      let local = '';
-      if (data.localizacao && typeof data.localizacao.lat === 'number') {
-        const l = data.localizacao;
-        const rotulo = l.nome || `${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}`;
-        const lua = faseDaLua(quando);
-        const c = data.clima;
-        const climaTxt = c && typeof c.temp === 'number' ? ` · ${escapeHtml(c.icone)} ${c.temp}°C, ${escapeHtml(c.descricao)}` : '';
-        local = `
-          <div style="font-size:13px;color:#475569;margin-top:2px;">📍 <a href="https://www.google.com/maps?q=${l.lat},${l.lng}" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;">${escapeHtml(rotulo)}</a>${climaTxt} · ${lua.icone} ${escapeHtml(lua.nome)}</div>
-          <iframe src="${urlMapa(l.lat, l.lng)}" loading="lazy" title="Mapa" style="width:100%;height:140px;border:0;border-radius:10px;margin-top:8px;"></iframe>`;
-      }
-
-      const listaFotos = [].concat(Array.isArray(data.fotos) ? data.fotos : [], data.fotoBase64 ? [data.fotoBase64] : [])
-        .filter(f => typeof f === 'string' && f.startsWith('data:image/'));
-      const larguraFoto = listaFotos.length > 1 ? '48%' : '100%';
-      const fotosHtml = listaFotos.length
-        ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">${listaFotos.map(f => `<img src="${f}" style="max-width:${larguraFoto};border-radius:8px;">`).join('')}</div>`
-        : '';
-
-      const arquivosHtml = (Array.isArray(data.arquivos) ? data.arquivos : [])
-        .filter(a => a && typeof a.link === 'string' && /^https:\/\/(drive|docs)\.google\.com\//.test(a.link))
-        .map(a => `<a href="${escapeHtml(a.link)}" target="_blank" rel="noopener" style="display:inline-block;margin:6px 6px 0 0;padding:6px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;color:#1e3a8a;text-decoration:none;background:#f8fafc;">📎 ${escapeHtml(a.nome)}</a>`)
-        .join('');
-
-      html += `
-        <div style="border-left:4px solid #2563eb; padding-left:12px; margin-bottom:15px;">
-          <div style="font-size:12px; color:#64748b; font-weight:bold; text-transform:capitalize;">${escapeHtml(dataTxt)} · ${escapeHtml(horaTxt)}</div>
-          ${local}
-          <p style="white-space: pre-wrap; margin: 6px 0;">${escapeHtml(data.texto)}</p>
-          ${fotosHtml}
-          ${arquivosHtml}
-        </div>
-      `;
-    });
-    timeline.innerHTML = html;
+    todasEntradas = [];
+    querySnapshot.forEach((docSnap) => todasEntradas.push(docSnap.data()));
+    renderTimeline();
   }, (error) => {
     console.error(error);
     timeline.innerHTML = "<p>Erro ao carregar o histórico.</p>";
   });
 }
+
+criarBarraBusca();
 
 // 6. LOGIN COM GOOGLE
 let cancelarEscuta = null;
@@ -904,6 +1126,7 @@ onAuthStateChanged(auth, (user) => {
     telaLogin.btnSair.style.display = 'none';
     if (cancelarEscuta) { cancelarEscuta(); cancelarEscuta = null; }
     driveToken = null;
+    todasEntradas = [];
     const timeline = document.getElementById('timeline');
     if (timeline) timeline.innerHTML = "";
   }
