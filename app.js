@@ -15,7 +15,7 @@ const firebaseConfig = {
 const GEMINI_API_KEY = "AQ.Ab8RN6K6jZY78LvOKQiH9wdrB7qRGZWP3W6mvUZhzBnVwzKsAA";
 // gemini-1.5-flash foi descontinuado; troque aqui se quiser outro modelo.
 const GEMINI_MODEL = "gemini-2.5-flash";
-const GEMINI_MODELOS = [GEMINI_MODEL, "gemini-flash-latest"]; // tenta o próximo se um modelo não existir
+const GEMINI_MODELOS = [GEMINI_MODEL, "gemini-flash-latest", "gemini-3.8-flash"]; // tenta o próximo se um modelo não existir
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
@@ -42,7 +42,7 @@ let pastaDriveId = null;
 let fotosPendentes = [];
 let arquivosPendentes = [];
 
-const APP_VERSION = "v10-busca";
+const APP_VERSION = "v11-chave-aq";
 console.log("app.js", APP_VERSION);
 
 const btnRecord = document.getElementById('btnRecord');
@@ -67,10 +67,11 @@ async function chamarGemini(prompt) {
   for (const modelo of GEMINI_MODELOS) {
     try {
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          // Chaves novas (AQ.) precisam ir neste cabeçalho, e não no endereço
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         }
       );
