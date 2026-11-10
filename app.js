@@ -2,7 +2,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebas
 import { getFirestore, collection, addDoc, query, orderBy, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
-// 1. CONFIGURAÇÕES DO FIREBASE E GEMINI
+// 1. CONFIGURAÇÕES DO FIREBASE
 const firebaseConfig = {
   apiKey: "AIzaSyBoqyE_A9cAJl2uyBioXNBB8JF94BnStj4",
   authDomain: "meu-diario-app-b8bfd.firebaseapp.com",
@@ -12,23 +12,17 @@ const firebaseConfig = {
   appId: "1:376407447383:web:e41345dad532bbebf2d012"
 };
 
-// CHAVE ATUALIZADA DO GOOGLE AI STUDIO (PREFIXO AQ)
-const GEMINI_API_KEY = "AQ.Ab8RN6Lt7X8ZKYl3mB3Qi_diLpW4EOcWpH3lzkRerRaLyj8Hdw";
-const GEMINI_MODEL = "gemini-1.5-flash";
-
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
 
 let currentLocation = null;
-let chatHistory = [];
 let mediaStream = null;
 let recognition = null;
 let isRecording = false;
 let baseText = "";
 let alvoDitado = null;
 let botaoDitado = null;
-let btnMicChat = null;
 let ultimoErroDitado = null;
 let ultimoTrechoAndroid = "";
 
@@ -41,7 +35,7 @@ let pastaDriveId = null;
 let fotosPendentes = [];
 let arquivosPendentes = [];
 
-const APP_VERSION = "v13-chave-aq-oficial";
+const APP_VERSION = "v14-sem-ia-estavel";
 console.log("app.js", APP_VERSION);
 
 const btnRecord = document.getElementById('btnRecord');
@@ -60,90 +54,7 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-// 2. CONVERSA COM A IA (UTILIZANDO O CABEÇALHO x-goog-api-key)
-async function chamarGemini(prompt) {
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-      {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'x-goog-api-key': GEMINI_API_KEY 
-        },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-      }
-    );
-    const data = await response.json();
-    if (!response.ok || data.error) {
-      console.error("Erro Gemini:", data.error || response.status);
-      return `Erro da IA: ${data.error?.message || response.status}`;
-    }
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "A IA não retornou resposta.";
-  } catch (err) {
-    console.error(err);
-    return "Erro ao comunicar com a IA.";
-  }
-}
-
-// ANÁLISE AUTOMÁTICA DE HUMOR (MOOD TRACKER)
-async function analisarHumorDoTexto(texto) {
-  if (!texto || texto.length < 15) return null;
-  try {
-    const prompt = `Analise o texto a seguir de um diário pessoal e identifique o sentimento/humor predominante. Responda ESTRITAMENTE com um emoji e um rótulo curto de no máximo 2 palavras (Exemplo: "😊 Realizado", "🌿 Tranquilo", "⚡ Produtivo", "💭 Reflexivo", "😤 Cansado"). Texto: "${texto}"`;
-    const resposta = await chamarGemini(prompt);
-    const limpo = resposta.trim().replace(/["']/g, '');
-    return (limpo.length > 0 && limpo.length <= 25 && !limpo.includes("Erro")) ? limpo : null;
-  } catch (e) {
-    return null;
-  }
-}
-
-// CHAT DE IA
-const chatBox = document.getElementById('chatBox');
-const chatInput = document.getElementById('chatInput');
-const btnSendChat = document.getElementById('btnSendChat');
-const btnInspire = document.getElementById('btnInspire');
-const btnSaveChatToDiary = document.getElementById('btnSaveChatToDiary');
-
-function appendMsg(sender, text) {
-  const msgDiv = document.createElement('div');
-  msgDiv.className = `msg ${sender === 'user' ? 'msg-user' : 'msg-ai'}`;
-  msgDiv.innerText = text;
-  chatBox.appendChild(msgDiv);
-  chatBox.scrollTop = chatBox.scrollHeight;
-  chatHistory.push(`${sender === 'user' ? 'Você' : 'IA'}: ${text}`);
-}
-
-if (btnSendChat) {
-  btnSendChat.addEventListener('click', async () => {
-    if (isRecording && alvoDitado === chatInput) await pararGravacao();
-    const text = chatInput.value.trim();
-    if (!text) return;
-    appendMsg('user', text);
-    chatInput.value = '';
-    const respostaIA = await chamarGemini(`Você é um assistente pessoal empático de diário. Responda brevemente e ajude o usuário a refletir sobre o seu dia: ${text}`);
-    appendMsg('ai', respostaIA);
-  });
-}
-
-if (btnInspire) {
-  btnInspire.addEventListener('click', async () => {
-    appendMsg('ai', "Pensando em uma pergunta de reflexão...");
-    const pergunta = await chamarGemini("Gere 2 perguntas reflexivas, curtas e interessantes para ajudar alguém a escrever no seu diário pessoal hoje.");
-    appendMsg('ai', pergunta);
-  });
-}
-
-if (btnSaveChatToDiary) {
-  btnSaveChatToDiary.addEventListener('click', () => {
-    if (chatHistory.length === 0) return;
-    entryText.value += `\n\n--- Conversa com IA ---\n` + chatHistory.join('\n');
-    statusMsg.innerText = "Conversa copiada para o diário!";
-  });
-}
-
-// 3. DITADO NATIVO EM TEMPO REAL + DESLIGAMENTO FÍSICO DO MICROFONE
+// 2. DITADO NATIVO EM TEMPO REAL + DESLIGAMENTO FÍSICO DO MICROFONE
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const EH_ANDROID = /Android/i.test(navigator.userAgent);
 
@@ -161,13 +72,9 @@ function finalizarUI() {
   recognition = null;
   isRecording = false;
   desligarMicrofoneHardware();
-  btnRecord.classList.remove('recording');
-  btnRecord.innerText = "🎙️ Gravar Voz";
-  if (btnMicChat) {
-    btnMicChat.classList.remove('recording');
-    btnMicChat.innerText = "🎙️";
-    btnMicChat.style.background = '';
-    btnMicChat.style.color = '';
+  if (btnRecord) {
+    btnRecord.classList.remove('recording');
+    btnRecord.innerText = "🎙️ Gravar Voz";
   }
   alvoDitado = null;
   botaoDitado = null;
@@ -222,7 +129,7 @@ function criarReconhecimento() {
 
     ultimoErroDitado = e.error;
     isRecording = false;
-    statusMsg.innerText = `⚠️ Erro no ditado (${e.error}): ${explicacoes[e.error] || 'erro desconhecido.'}`;
+    if (statusMsg) statusMsg.innerText = `⚠️ Erro no ditado (${e.error}): ${explicacoes[e.error] || 'erro desconhecido.'}`;
     try { rec.abort(); } catch (err) {}
     finalizarUI();
   };
@@ -275,15 +182,11 @@ async function iniciarGravacao(alvo, botao) {
   }
 
   const botaoAtivo = botaoDitado || btnRecord;
-  botaoAtivo.classList.add('recording');
-  if (botaoAtivo === btnRecord) {
+  if (botaoAtivo) {
+    botaoAtivo.classList.add('recording');
     botaoAtivo.innerText = "⏹️ Parar Gravação";
-  } else {
-    botaoAtivo.innerText = "⏹️";
-    botaoAtivo.style.background = '#fee2e2';
-    botaoAtivo.style.color = '#b91c1c';
   }
-  statusMsg.innerText = "🎙️ Fale agora! O texto será inserido automaticamente...";
+  if (statusMsg) statusMsg.innerText = "🎙️ Fale agora! O texto será inserido automaticamente...";
 }
 
 function pararGravacao() {
@@ -309,7 +212,7 @@ function pararGravacao() {
       resolve();
     }
   }).then(() => {
-    if (!ultimoErroDitado) {
+    if (!ultimoErroDitado && statusMsg) {
       statusMsg.innerText = "Gravação encerrada e microfone desligado com sucesso!";
     }
   });
@@ -328,23 +231,13 @@ if (btnRecord) {
   btnRecord.addEventListener('click', () => alternarGravacao(entryText, btnRecord));
 }
 
-if (chatInput && btnSendChat) {
-  btnMicChat = document.createElement('button');
-  btnMicChat.type = 'button';
-  btnMicChat.className = btnSendChat.className;
-  btnMicChat.innerText = '🎙️';
-  btnMicChat.title = 'Falar com a IA';
-  btnMicChat.addEventListener('click', () => alternarGravacao(chatInput, btnMicChat));
-  btnSendChat.insertAdjacentElement('beforebegin', btnMicChat);
-}
-
 window.addEventListener('pagehide', () => {
   isRecording = false;
   try { recognition?.abort(); } catch (e) {}
   desligarMicrofoneHardware();
 });
 
-// 4. LOCAL, CLIMA, LUA E MAPA
+// 3. LOCAL, CLIMA, LUA E MAPA
 let climaAtual = null;
 let contextoSolicitado = false;
 
@@ -447,24 +340,24 @@ function mostrarContexto() {
 
 function capturarContexto() {
   if (!navigator.geolocation) {
-    statusMsg.innerText = "Este navegador não tem GPS.";
+    if (statusMsg) statusMsg.innerText = "Este navegador não tem GPS.";
     return Promise.resolve();
   }
-  statusMsg.innerText = "Obtendo localização...";
+  if (statusMsg) statusMsg.innerText = "Obtendo localização...";
   return new Promise((resolve) => {
     navigator.geolocation.getCurrentPosition(async (pos) => {
       const lat = pos.coords.latitude;
       const lng = pos.coords.longitude;
       currentLocation = { lat, lng, nome: null };
-      statusMsg.innerText = "Buscando o lugar e o clima...";
+      if (statusMsg) statusMsg.innerText = "Buscando o lugar e o clima...";
       const resultados = await Promise.all([nomeDoLugar(lat, lng), buscarClima(lat, lng)]);
       currentLocation.nome = resultados[0];
       climaAtual = resultados[1];
       mostrarContexto();
-      statusMsg.innerText = "Local e clima registrados.";
+      if (statusMsg) statusMsg.innerText = "Local e clima registrados.";
       resolve();
     }, () => {
-      statusMsg.innerText = "Não consegui obter o GPS.";
+      if (statusMsg) statusMsg.innerText = "Não consegui obter o GPS.";
       resolve();
     }, { enableHighAccuracy: true, timeout: 15000 });
   });
@@ -485,7 +378,7 @@ if (btnLocation) {
   });
 }
 
-// 5. FOTOS E GOOGLE DRIVE
+// 4. FOTOS E GOOGLE DRIVE
 const MAX_FOTOS = 4;
 const MAX_ARQUIVO_MB = 10;
 const photoInput = document.getElementById('photoInput');
@@ -571,7 +464,7 @@ if (photoInput) {
     for (const f of Array.from(photoInput.files)) {
       if (!f.type.startsWith('image/')) continue;
       if (fotosPendentes.length >= MAX_FOTOS) {
-        statusMsg.innerText = `Máximo de ${MAX_FOTOS} fotos por entrada.`;
+        if (statusMsg) statusMsg.innerText = `Máximo de ${MAX_FOTOS} fotos por entrada.`;
         break;
       }
       fotosPendentes.push(f);
@@ -585,7 +478,7 @@ cameraInput.addEventListener('change', () => {
   for (const f of Array.from(cameraInput.files)) {
     if (!f.type.startsWith('image/')) continue;
     if (fotosPendentes.length >= MAX_FOTOS) {
-      statusMsg.innerText = `Máximo de ${MAX_FOTOS} fotos por entrada.`;
+      if (statusMsg) statusMsg.innerText = `Máximo de ${MAX_FOTOS} fotos por entrada.`;
       break;
     }
     fotosPendentes.push(f);
@@ -597,7 +490,7 @@ cameraInput.addEventListener('change', () => {
 fileInput.addEventListener('change', () => {
   for (const f of Array.from(fileInput.files)) {
     if (f.size > MAX_ARQUIVO_MB * 1048576) {
-      statusMsg.innerText = `"${f.name}" passa de ${MAX_ARQUIVO_MB} MB e foi ignorado.`;
+      if (statusMsg) statusMsg.innerText = `"${f.name}" passa de ${MAX_ARQUIVO_MB} MB e foi ignorado.`;
       continue;
     }
     arquivosPendentes.push(f);
@@ -702,16 +595,16 @@ async function enviarArquivoDrive(file, pastaId) {
   return { id: r.id, nome: r.name, tipo: r.mimeType, tamanho: Number(r.size) || file.size, link: r.webViewLink };
 }
 
-// 6. SALVAR REGISTRO NO FIREBASE
+// 5. SALVAR REGISTRO NO FIREBASE
 if (btnSave) {
   btnSave.addEventListener('click', async () => {
     if (arquivosPendentes.length && !tokenDriveValido()) {
       try {
-        statusMsg.innerText = "Conectando ao Google Drive...";
+        if (statusMsg) statusMsg.innerText = "Conectando ao Google Drive...";
         await entrarComGoogle();
       } catch (err) {
         console.error(err);
-        statusMsg.innerText = "Não foi possível conectar ao Google Drive.";
+        if (statusMsg) statusMsg.innerText = "Não foi possível conectar ao Google Drive.";
         return;
       }
     }
@@ -726,34 +619,30 @@ if (btnSave) {
 
     btnSave.disabled = true;
     try {
-      statusMsg.innerText = "Preparando a entrada...";
+      if (statusMsg) statusMsg.innerText = "Preparando a entrada...";
       const fotos = await prepararFotos();
 
       const arquivos = [];
       if (arquivosPendentes.length) {
         const pastaId = await garantirPastaDrive();
         for (let i = 0; i < arquivosPendentes.length; i++) {
-          statusMsg.innerText = `Enviando arquivo ${i + 1} de ${arquivosPendentes.length} para o Drive...`;
+          if (statusMsg) statusMsg.innerText = `Enviando arquivo ${i + 1} de ${arquivosPendentes.length} para o Drive...`;
           arquivos.push(await enviarArquivoDrive(arquivosPendentes[i], pastaId));
         }
       }
 
-      statusMsg.innerText = "🤖 Analisando tom emocional...";
-      const humorDetectado = await analisarHumorDoTexto(textoFinal);
-
-      statusMsg.innerText = "Salvando registro no banco de dados...";
+      if (statusMsg) statusMsg.innerText = "Salvando registro no banco de dados...";
       await addDoc(collection(db, "diario_entradas"), {
         texto: textoFinal,
         uid: auth.currentUser ? auth.currentUser.uid : null,
         data: new Date().toISOString(),
         localizacao: currentLocation,
         clima: climaAtual,
-        humor: humorDetectado,
         fotos,
         arquivos
       });
 
-      statusMsg.innerText = "Entrada salva com sucesso!";
+      if (statusMsg) statusMsg.innerText = "Entrada salva com sucesso!";
       entryText.value = "";
       baseText = "";
       currentLocation = null;
@@ -765,17 +654,17 @@ if (btnSave) {
       renderPreview();
     } catch (err) {
       console.error(err);
-      statusMsg.innerText = `Erro ao salvar: ${err.message || 'tente novamente.'}`;
+      if (statusMsg) statusMsg.innerText = `Erro ao salvar: ${err.message || 'tente novamente.'}`;
     } finally {
       btnSave.disabled = false;
     }
   });
 }
 
-// 7. HISTÓRICO EM TEMPO REAL + BUSCA + FLASHBACK
+// 6. HISTÓRICO EM TEMPO REAL + BUSCA DIRETA POR PALAVRAS-CHAVE + FLASHBACK
 let todasEntradas = [];
-const busca = { consulta: '', modo: 'local', grupos: [], termosDestaque: [], extras: [] };
-const STOPWORDS = new Set(['de','do','da','dos','das','no','na','nos','nas','que','eu','um','uma','uns','umas','em','com','para','por','meu','minha','meus','minhas','fiz','fui','foi','sobre','todos','todas','todo','toda','quero','ver','puxar','mostrar','mostra','mostre','relato','relatos','entrada','entradas','tudo','falei','escrevi','onde','quando','pra','pro','ou','seus','suas','tem','teve','tive']);
+const busca = { consulta: '', grupos: [], termosDestaque: [] };
+const STOPWORDS = new Set(['de','do','da','dos','das','no','na','nos','nas','que','eu','um','uma','uns','umas','em','com','para','por','meu','minha','meus','minhas','fiz','fui','foi','sobre','todos','todas','todo','toda','relato','relatos','entrada','entradas','tudo','falei','escrevi','onde','quando','pra','pro','ou','seus','suas','tem','teve','tive']);
 
 function norm(s) {
   return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -788,14 +677,13 @@ function radical(p) {
 }
 
 function palavrasDaConsulta(texto) {
-  return norm(texto).split(/[^a-z0-9]+/).filter(p => p.length >= 3 && !STOPWORDS.has(p));
+  return norm(texto).split(/[^a-z0-9]+/).filter(p => p.length >= 2 && !STOPWORDS.has(p));
 }
 
 function textoBuscavel(e) {
   const partes = [e.texto];
   if (e.localizacao && e.localizacao.nome) partes.push(e.localizacao.nome);
   if (e.clima && e.clima.descricao) partes.push(e.clima.descricao);
-  if (e.humor) partes.push(e.humor);
   if (Array.isArray(e.arquivos)) e.arquivos.forEach(a => { if (a && a.nome) partes.push(a.nome); });
   return norm(partes.join(' \n '));
 }
@@ -803,34 +691,25 @@ function textoBuscavel(e) {
 function definirBuscaLocal(consulta) {
   const palavras = palavrasDaConsulta(consulta);
   busca.consulta = consulta;
-  busca.modo = 'local';
-  busca.extras = [];
   busca.grupos = palavras.map(p => [radical(p)]);
   busca.termosDestaque = busca.grupos.map(g => g[0]);
 }
 
 function entradaCombina(textoNorm) {
   if (!busca.grupos.length) return 1;
-  let pontos = 0;
   for (const grupo of busca.grupos) {
     const achados = grupo.filter(t => textoNorm.includes(t));
-    if (!achados.length) {
-      if (busca.modo === 'local') return 0;
-      continue;
-    }
-    pontos += achados.length;
+    if (!achados.length) return 0;
   }
-  return pontos;
+  return 1;
 }
 
 function entradasFiltradas() {
   const lista = [];
   for (const e of todasEntradas) {
-    const pontos = entradaCombina(textoBuscavel(e));
-    if (pontos > 0) lista.push({ e, pontos });
-  }
-  if (busca.modo === 'ia') {
-    lista.sort((a, b) => b.pontos - a.pontos || String(b.e.data).localeCompare(String(a.e.data)));
+    if (entradaCombina(textoBuscavel(e))) {
+      lista.push(e);
+    }
   }
   return lista;
 }
@@ -884,8 +763,6 @@ function htmlEntrada(data, termos) {
       <iframe src="${urlMapa(l.lat, l.lng)}" loading="lazy" title="Mapa" style="width:100%;height:140px;border:0;border-radius:10px;margin-top:8px;"></iframe>`;
   }
 
-  const badgeHumor = data.humor ? `<span style="font-size:12px;background:#eff6ff;color:#1e40af;padding:2px 8px;border-radius:12px;font-weight:bold;margin-left:8px;">${escapeHtml(data.humor)}</span>` : '';
-
   const listaFotos = [].concat(Array.isArray(data.fotos) ? data.fotos : [], data.fotoBase64 ? [data.fotoBase64] : [])
     .filter(f => typeof f === 'string' && f.startsWith('data:image/'));
   const larguraFoto = listaFotos.length > 1 ? '48%' : '100%';
@@ -900,7 +777,7 @@ function htmlEntrada(data, termos) {
 
   return `
     <div style="border-left:4px solid #2563eb; padding-left:12px; margin-bottom:15px;">
-      <div style="font-size:12px; color:#64748b; font-weight:bold; text-transform:capitalize;">${escapeHtml(dataTxt)} · ${escapeHtml(horaTxt)} ${badgeHumor}</div>
+      <div style="font-size:12px; color:#64748b; font-weight:bold; text-transform:capitalize;">${escapeHtml(dataTxt)} · ${escapeHtml(horaTxt)}</div>
       ${local}
       <p style="white-space: pre-wrap; margin: 6px 0;">${destacar(data.texto, termos)}</p>
       ${fotosHtml}
@@ -945,11 +822,7 @@ function atualizarInfoBusca(n) {
     info.textContent = '';
     return;
   }
-  let txt = `${n} de ${todasEntradas.length} entradas`;
-  if (busca.modo === 'ia' && busca.extras.length) {
-    txt += ` · ✨ termos relacionados: ${busca.extras.slice(0, 12).join(', ')}`;
-  }
-  info.textContent = txt;
+  info.textContent = `${n} de ${todasEntradas.length} entradas encontradas`;
 }
 
 function renderTimeline() {
@@ -969,81 +842,7 @@ function renderTimeline() {
     timeline.innerHTML = "<p>Nenhuma entrada encontrada para essa busca.</p>";
     return;
   }
-  timeline.innerHTML = lista.map(item => htmlEntrada(item.e, busca.termosDestaque)).join('');
-}
-
-async function buscarComIA() {
-  const input = document.getElementById('buscaInput');
-  const botao = document.getElementById('buscaIA');
-  const info = document.getElementById('buscaInfo');
-  if (!input) return;
-  const consulta = input.value.trim();
-  if (!consulta) {
-    definirBuscaLocal('');
-    renderTimeline();
-    return;
-  }
-  botao.disabled = true;
-  info.textContent = '✨ Pensando em termos relacionados...';
-
-  const palavras = palavrasDaConsulta(consulta);
-  const resposta = await chamarGemini(
-    `Você ajuda a buscar em um diário pessoal escrito em português do Brasil. Busca do usuário: "${consulta}". ` +
-    `Identifique o tema principal e liste de 8 a 20 palavras ou expressões curtas que possam aparecer em relatos sobre esse tema. ` +
-    `Responda SOMENTE com um array JSON de strings em minúsculas, sem explicações.`
-  );
-
-  let extras = [];
-  try {
-    const m = String(resposta).match(/\[[\s\S]*\]/);
-    if (m) {
-      extras = JSON.parse(m[0])
-        .filter(x => typeof x === 'string')
-        .map(x => norm(x).trim())
-        .filter(x => x.length >= 3)
-        .slice(0, 25);
-    }
-  } catch (err) {
-    console.error(err);
-  }
-  botao.disabled = false;
-
-  if (!extras.length) {
-    definirBuscaLocal(consulta);
-    renderTimeline();
-    info.textContent += ' · (usando busca normal)';
-    return;
-  }
-
-  const termos = new Set(palavras.map(radical));
-  extras.forEach(x => termos.add(x.includes(' ') ? x : radical(x)));
-  busca.consulta = consulta;
-  busca.modo = 'ia';
-  busca.extras = extras;
-  busca.grupos = [Array.from(termos)];
-  busca.termosDestaque = Array.from(termos);
-  renderTimeline();
-}
-
-// RESUMO MENSAL POR IA
-async function gerarResumoMensal() {
-  if (!todasEntradas.length) {
-    alert("Nenhuma entrada salva para resumir.");
-    return;
-  }
-  const btnResumo = document.getElementById('btnResumoMensal');
-  btnResumo.disabled = true;
-  btnResumo.innerText = "⏳ Gerando...";
-
-  const relatos = todasEntradas.slice(0, 20).map(e => `[${new Date(e.data).toLocaleDateString()}]: ${e.texto}`).join('\n');
-  const prompt = `Leia estes últimos relatos do diário pessoal de uma pessoa e faça um resumo empático e inspirador em 3 parágrafos curtos, destacando os principais acontecimentos, conquistas e sentimentos do período:\n\n${relatos}`;
-
-  const resumo = await chamarGemini(prompt);
-  btnResumo.disabled = false;
-  btnResumo.innerText = "📊 Resumo Mensal";
-
-  appendMsg('ai', `📊 **Resumo dos Seus Últimos Registros:**\n\n${resumo}`);
-  document.getElementById('chatBox').scrollIntoView({ behavior: 'smooth' });
+  timeline.innerHTML = lista.map(item => htmlEntrada(item, busca.termosDestaque)).join('');
 }
 
 function criarBarraBusca() {
@@ -1057,10 +856,8 @@ function criarBarraBusca() {
 
   const barra = document.createElement('div');
   barra.innerHTML = `
-    <div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
-      <input id="buscaInput" type="search" placeholder="🔍 Buscar no diário..." style="flex:1;min-width:180px;padding:10px;border:1px solid #e2e8f0;border-radius:8px;outline:none;font-size:14px;">
-      <button id="buscaIA" class="btn-tool" type="button" title="Busca inteligente">✨ IA</button>
-      <button id="btnResumoMensal" class="btn-tool" type="button" title="Gerar Resumo por IA">📊 Resumo</button>
+    <div style="display:flex;gap:8px;margin-bottom:6px;">
+      <input id="buscaInput" type="search" placeholder="🔍 Buscar por palavras no diário..." style="flex:1;min-width:0;padding:10px;border:1px solid #e2e8f0;border-radius:8px;outline:none;font-size:14px;">
     </div>
     <div id="buscaInfo" style="font-size:12px;color:#64748b;margin-bottom:10px;"></div>`;
   timeline.insertAdjacentElement('beforebegin', barra);
@@ -1072,17 +869,8 @@ function criarBarraBusca() {
     timer = setTimeout(() => {
       definirBuscaLocal(input.value);
       renderTimeline();
-    }, 250);
+    }, 200);
   });
-  input.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') {
-      ev.preventDefault();
-      clearTimeout(timer);
-      buscarComIA();
-    }
-  });
-  document.getElementById('buscaIA').addEventListener('click', buscarComIA);
-  document.getElementById('btnResumoMensal').addEventListener('click', gerarResumoMensal);
 }
 
 function escutarEntradasEmTempoReal() {
@@ -1103,7 +891,7 @@ function escutarEntradasEmTempoReal() {
 
 criarBarraBusca();
 
-// 8. LOGIN COM GOOGLE E TELA DE PROTEÇÃO
+// 7. LOGIN COM GOOGLE E TELA DE PROTEÇÃO
 let cancelarEscuta = null;
 
 function criarTelaLogin() {
