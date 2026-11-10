@@ -11,8 +11,8 @@ const firebaseConfig = {
   appId: "1:376407447383:web:e41345dad532bbebf2d012"
 };
 
-// Decisão do dono: manter a mesma chave do projeto (pública no código).
-const GEMINI_API_KEY = firebaseConfig.apiKey;
+// Chave do Google AI Studio, só para o Gemini (pública no código, por decisão do dono).
+const GEMINI_API_KEY = "AQ.Ab8RN6K6jZY78LvOKQiH9wdrB7qRGZWP3W6mvUZhzBnVwzKsAA";
 // gemini-1.5-flash foi descontinuado; troque aqui se quiser outro modelo.
 const GEMINI_MODEL = "gemini-2.5-flash";
 
