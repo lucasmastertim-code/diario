@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Meu Diário Pessoal & IA</title>
+  <title>Meu Diário Pessoal</title>
   <style>
     :root {
       --bg: #f4f6f8;
@@ -79,31 +79,6 @@
     .btn-save:hover { background: var(--accent); }
     .status { font-size: 13px; color: #64748b; margin-top: 10px; text-align: center; }
     .recording { background: #fee2e2 !important; color: #dc2626 !important; border-color: #fca5a5 !important; }
-
-    /* Estilos do Chat com IA */
-    .chat-box {
-      height: 200px;
-      overflow-y: auto;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px;
-      background: #fafafa;
-      margin-bottom: 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .msg { padding: 8px 12px; border-radius: 8px; max-width: 85%; font-size: 14px; line-height: 1.4; }
-    .msg-user { background: #dbeafe; color: #1e40af; align-self: flex-end; }
-    .msg-ai { background: #e2e8f0; color: #0f172a; align-self: flex-start; }
-    .chat-input-row { display: flex; gap: 8px; }
-    .chat-input-row input {
-      flex: 1;
-      padding: 10px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      outline: none;
-    }
   </style>
 
   <script type="module" src="app.js"></script>
@@ -111,23 +86,7 @@
 <body>
 
 <div class="container">
-  <h1>📖 Meu Diário Pessoal & IA</h1>
-
-  <!-- PAINEL DE CONVERSA COM A IA -->
-  <div class="card">
-    <h3>🤖 Conversar com a IA</h3>
-    <div class="chat-box" id="chatBox">
-      <div class="msg msg-ai">Olá! Como posso ajudar na sua reflexão de hoje? Você pode conversar comigo ou pedir sugestões de escrita.</div>
-    </div>
-    <div class="chat-input-row">
-      <input type="text" id="chatInput" placeholder="Converse ou tire dúvidas com a IA...">
-      <button class="btn-tool" id="btnSendChat">Enviar</button>
-    </div>
-    <div style="margin-top: 8px; display: flex; gap: 8px;">
-      <button class="btn-tool" id="btnInspire" style="flex:1;">💡 Sugerir Pergunta</button>
-      <button class="btn-tool" id="btnSaveChatToDiary" style="flex:1;">📌 Salvar Chat no Diário</button>
-    </div>
-  </div>
+  <h1>📖 Meu Diário Pessoal</h1>
 
   <!-- REGISTRO DO DIÁRIO -->
   <div class="card">
@@ -145,7 +104,7 @@
     <button class="btn-save" id="btnSave">Salvar Entrada</button>
   </div>
 
-  <!-- HISTÓRICO EM TEMPO REAL -->
+  <!-- HISTÓRICO EM TEMPO REAL E BUSCA -->
   <div class="card">
     <h3>📌 Histórico</h3>
     <div id="timeline">Carregando entradas...</div>
