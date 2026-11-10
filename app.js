@@ -13,7 +13,7 @@ const firebaseConfig = {
 };
 
 // CHAVE PÚBLICA VÁLIDA E MODELO ESTÁVEL DA API GEMINI
-const GEMINI_API_KEY = "AIzaSyBoqyE_A9cAJl2uyBioXNBB8JF94BnStj4";
+const GEMINI_API_KEY = "AQ.Ab8RN6L3nqNr0ndn9uFR6traAgjekYSnjoDFmDPXXZWaOIRKQg";
 const GEMINI_MODEL = "gemini-1.5-flash";
 
 const app = initializeApp(firebaseConfig);
