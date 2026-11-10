@@ -12,8 +12,8 @@ const firebaseConfig = {
   appId: "1:376407447383:web:e41345dad532bbebf2d012"
 };
 
-// CHAVE PÚBLICA VÁLIDA E MODELO ESTÁVEL DA API GEMINI
-const GEMINI_API_KEY = "AQ.Ab8RN6L3nqNr0ndn9uFR6traAgjekYSnjoDFmDPXXZWaOIRKQg";
+// CHAVE ATUALIZADA DO GOOGLE AI STUDIO (PREFIXO AQ)
+const GEMINI_API_KEY = "AQ.Ab8RN6Lt7X8ZKYl3mB3Qi_diLpW4EOcWpH3lzkRerRaLyj8Hdw";
 const GEMINI_MODEL = "gemini-1.5-flash";
 
 const app = initializeApp(firebaseConfig);
@@ -41,7 +41,7 @@ let pastaDriveId = null;
 let fotosPendentes = [];
 let arquivosPendentes = [];
 
-const APP_VERSION = "v12-completo-ia-humor-flashback";
+const APP_VERSION = "v13-chave-aq-oficial";
 console.log("app.js", APP_VERSION);
 
 const btnRecord = document.getElementById('btnRecord');
@@ -60,14 +60,17 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-// 2. CONVERSA COM A IA (GEMINI API REST COMPATÍVEL)
+// 2. CONVERSA COM A IA (UTILIZANDO O CABEÇALHO x-goog-api-key)
 async function chamarGemini(prompt) {
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-goog-api-key': GEMINI_API_KEY 
+        },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
       }
     );
@@ -212,7 +215,7 @@ function criarReconhecimento() {
     const explicacoes = {
       'not-allowed': 'Permissão de microfone negada.',
       'service-not-allowed': 'Navegador bloqueou o serviço de voz.',
-      'network': 'Sem acesso ao serviço de voz. Verifique a conexão.',
+      'network': 'Sem acesso ao serviço de voz.',
       'audio-capture': 'Nenhum microfone encontrado.',
       'language-not-supported': 'Idioma pt-BR não suportado.'
     };
@@ -699,7 +702,7 @@ async function enviarArquivoDrive(file, pastaId) {
   return { id: r.id, nome: r.name, tipo: r.mimeType, tamanho: Number(r.size) || file.size, link: r.webViewLink };
 }
 
-// 6. SALVAR REGISTRO NO FIREBASE (COM HUMOR IA)
+// 6. SALVAR REGISTRO NO FIREBASE
 if (btnSave) {
   btnSave.addEventListener('click', async () => {
     if (arquivosPendentes.length && !tokenDriveValido()) {
@@ -769,7 +772,7 @@ if (btnSave) {
   });
 }
 
-// 7. HISTÓRICO EM TEMPO REAL + BUSCA + RECURSO "NESTE DIA"
+// 7. HISTÓRICO EM TEMPO REAL + BUSCA + FLASHBACK
 let todasEntradas = [];
 const busca = { consulta: '', modo: 'local', grupos: [], termosDestaque: [], extras: [] };
 const STOPWORDS = new Set(['de','do','da','dos','das','no','na','nos','nas','que','eu','um','uma','uns','umas','em','com','para','por','meu','minha','meus','minhas','fiz','fui','foi','sobre','todos','todas','todo','toda','quero','ver','puxar','mostrar','mostra','mostre','relato','relatos','entrada','entradas','tudo','falei','escrevi','onde','quando','pra','pro','ou','seus','suas','tem','teve','tive']);
@@ -906,7 +909,6 @@ function htmlEntrada(data, termos) {
   `;
 }
 
-// FUNCIONALIDADE: FLASHBACK "NESTE DIA"
 function verificarNesteDia() {
   const container = document.getElementById('nesteDiaBox');
   if (!container) return;
