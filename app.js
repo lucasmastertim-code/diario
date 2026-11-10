@@ -11,8 +11,8 @@ const firebaseConfig = {
   appId: "1:376407447383:web:e41345dad532bbebf2d012"
 };
 
-// Crie uma chave NOVA só para o Gemini (restrita ao seu domínio) e cole aqui.
-const GEMINI_API_KEY = "COLE_AQUI_SUA_NOVA_CHAVE_DO_GEMINI";
+// Decisão do dono: manter a mesma chave do projeto (pública no código).
+const GEMINI_API_KEY = firebaseConfig.apiKey;
 // gemini-1.5-flash foi descontinuado; troque aqui se quiser outro modelo.
 const GEMINI_MODEL = "gemini-2.5-flash";
 
